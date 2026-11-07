@@ -320,7 +320,7 @@ function Queue() {
     <>
       <div className="page-head" style={{ marginTop: 24 }}>
         <h2 style={{ margin: 0 }}>Analysis queue</h2>
-        <span className="sub">{waiting ? `${waiting} waiting` : "Nothing waiting."} Outages skip the queue and are filed immediately.</span>
+        <span className="sub">{waiting ? `${waiting} waiting.` : "Nothing waiting."} Outages skip the queue and are filed immediately.</span>
       </div>
       <ErrorNote error={list.error} />
       <div className="card flush">
