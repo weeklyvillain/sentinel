@@ -1,0 +1,18 @@
+# Override for docker-compose.behind-proxy.yml: joins the existing reverse
+# proxy's Docker network so it can reach sentinel:4318 and sentinel:8080.
+#
+#   docker compose -f docker-compose.behind-proxy.yml -f docker-compose.proxy-network.yml up -d
+#
+# Only add this once dashboard sign-in (GitHub App + ALLOWED_USERS/ALLOWED_ORG)
+# is configured: with DASHBOARD_AUTH=none the proxy would expose an open dashboard.
+services:
+  sentinel:
+    networks:
+      default:
+      proxy:
+        aliases: [sentinel]
+
+networks:
+  proxy:
+    external: true
+    name: ${PROXY_NETWORK:?set PROXY_NETWORK in .env (the proxy's Docker network)}
