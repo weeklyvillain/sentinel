@@ -11,9 +11,14 @@ import (
 
 // Config is the full runtime configuration.
 type Config struct {
-	OTLPAddr  string // SENTINEL_OTLP_ADDR, default :4318
-	DebugAddr string // SENTINEL_HTTP_ADDR (healthz, /groups); empty = serve on the OTLP listener
-	DBPath    string // SENTINEL_DB, default sentinel.db
+	OTLPAddr      string // SENTINEL_OTLP_ADDR, default :4318
+	DashboardAddr string // SENTINEL_HTTP_ADDR, default :8080 (dashboard + API)
+	PublicURL     string // PUBLIC_URL, default http://localhost:8080 (OAuth callbacks)
+	DBPath        string // SENTINEL_DB, default sentinel.db
+
+	DashboardAuth string   // DASHBOARD_AUTH: github (default) | none
+	AllowedUsers  []string // ALLOWED_USERS: GitHub logins allowed to sign in
+	AllowedOrg    string   // ALLOWED_ORG: members of this GitHub org may sign in
 
 	MinSeverity int32 // MIN_SEVERITY, default 17
 
@@ -24,8 +29,20 @@ type Config struct {
 	MaxIssuesPerHour int           // MAX_ISSUES_PER_HOUR, default 10
 	DownAfter        time.Duration // DOWN_AFTER, default 5m; 0 disables
 
+	LogRetention    time.Duration // LOG_RETENTION, default 7d
+	MetricRetention time.Duration // METRIC_RETENTION, default 7d
+
+	// GitHub App (recommended).
+	GitHubAppID           int64  // GITHUB_APP_ID
+	GitHubAppSlug         string // GITHUB_APP_SLUG (optional)
+	GitHubAppKey          []byte // GITHUB_APP_PRIVATE_KEY or GITHUB_APP_PRIVATE_KEY_FILE
+	GitHubAppClientID     string // GITHUB_APP_CLIENT_ID (sign-in)
+	GitHubAppClientSecret string // GITHUB_APP_CLIENT_SECRET (sign-in)
+	GitHubWebURL          string // GITHUB_WEB_URL, default https://github.com
+
+	// Legacy token mode / defaults.
 	GitHubToken  string   // GITHUB_TOKEN
-	GitHubRepo   string   // GITHUB_REPO owner/name
+	GitHubRepo   string   // GITHUB_REPO owner/name (fallback repository)
 	GitHubLabels []string // GITHUB_LABELS comma separated
 	GitHubAPI    string   // GITHUB_API_URL, default https://api.github.com
 	DryRun       bool     // DRY_RUN
@@ -38,27 +55,33 @@ type Config struct {
 	AITimeout       time.Duration
 }
 
+// AppConfigured reports whether GitHub App credentials were provided.
+func (c Config) AppConfigured() bool { return c.GitHubAppID != 0 && len(c.GitHubAppKey) > 0 }
+
 // Load reads the environment.
 func Load() (Config, error) {
 	c := Config{
-		OTLPAddr:        env("SENTINEL_OTLP_ADDR", ":4318"),
-		DebugAddr:       env("SENTINEL_HTTP_ADDR", ""),
-		DBPath:          env("SENTINEL_DB", "sentinel.db"),
-		GitHubToken:     os.Getenv("GITHUB_TOKEN"),
-		GitHubRepo:      os.Getenv("GITHUB_REPO"),
-		GitHubAPI:       env("GITHUB_API_URL", "https://api.github.com"),
-		AIProvider:      strings.ToLower(env("AI_PROVIDER", "anthropic")),
-		AIModel:         os.Getenv("AI_MODEL"),
-		AnthropicAPIKey: os.Getenv("ANTHROPIC_API_KEY"),
-		OpenAIBaseURL:   env("OPENAI_BASE_URL", "http://localhost:11434/v1"),
-		OpenAIAPIKey:    os.Getenv("OPENAI_API_KEY"),
+		OTLPAddr:              env("SENTINEL_OTLP_ADDR", ":4318"),
+		DashboardAddr:         env("SENTINEL_HTTP_ADDR", ":8080"),
+		PublicURL:             strings.TrimRight(env("PUBLIC_URL", "http://localhost:8080"), "/"),
+		DBPath:                env("SENTINEL_DB", "sentinel.db"),
+		DashboardAuth:         strings.ToLower(env("DASHBOARD_AUTH", "github")),
+		AllowedUsers:          splitList(os.Getenv("ALLOWED_USERS")),
+		AllowedOrg:            os.Getenv("ALLOWED_ORG"),
+		GitHubAppSlug:         os.Getenv("GITHUB_APP_SLUG"),
+		GitHubAppClientID:     os.Getenv("GITHUB_APP_CLIENT_ID"),
+		GitHubAppClientSecret: os.Getenv("GITHUB_APP_CLIENT_SECRET"),
+		GitHubWebURL:          env("GITHUB_WEB_URL", "https://github.com"),
+		GitHubToken:           os.Getenv("GITHUB_TOKEN"),
+		GitHubRepo:            os.Getenv("GITHUB_REPO"),
+		GitHubLabels:          splitList(os.Getenv("GITHUB_LABELS")),
+		GitHubAPI:             env("GITHUB_API_URL", "https://api.github.com"),
+		AIProvider:            strings.ToLower(env("AI_PROVIDER", "anthropic")),
+		AIModel:               os.Getenv("AI_MODEL"),
+		AnthropicAPIKey:       os.Getenv("ANTHROPIC_API_KEY"),
+		OpenAIBaseURL:         env("OPENAI_BASE_URL", "http://localhost:11434/v1"),
+		OpenAIAPIKey:          os.Getenv("OPENAI_API_KEY"),
 	}
-	for _, l := range strings.Split(os.Getenv("GITHUB_LABELS"), ",") {
-		if l = strings.TrimSpace(l); l != "" {
-			c.GitHubLabels = append(c.GitHubLabels, l)
-		}
-	}
-	var err error
 	p := parser{}
 	c.MinSeverity = int32(p.int("MIN_SEVERITY", 17))
 	c.Tick = p.dur("TICK_INTERVAL", 10*time.Second)
@@ -67,13 +90,35 @@ func Load() (Config, error) {
 	c.UpdateInterval = p.dur("UPDATE_INTERVAL", 30*time.Minute)
 	c.MaxIssuesPerHour = p.int("MAX_ISSUES_PER_HOUR", 10)
 	c.DownAfter = p.dur("DOWN_AFTER", 5*time.Minute)
+	c.LogRetention = p.dur("LOG_RETENTION", 7*24*time.Hour)
+	c.MetricRetention = p.dur("METRIC_RETENTION", 7*24*time.Hour)
 	c.AITimeout = p.dur("AI_TIMEOUT", 60*time.Second)
 	c.DryRun = p.bool("DRY_RUN", false)
+	c.GitHubAppID = int64(p.int("GITHUB_APP_ID", 0))
+	if k := os.Getenv("GITHUB_APP_PRIVATE_KEY"); k != "" {
+		// Allow the PEM to be passed with literal \n sequences.
+		c.GitHubAppKey = []byte(strings.ReplaceAll(k, `\n`, "\n"))
+	} else if f := os.Getenv("GITHUB_APP_PRIVATE_KEY_FILE"); f != "" {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			p.errs = append(p.errs, "GITHUB_APP_PRIVATE_KEY_FILE: "+err.Error())
+		}
+		c.GitHubAppKey = b
+	}
 	if len(p.errs) > 0 {
 		return c, fmt.Errorf("config: %s", strings.Join(p.errs, "; "))
 	}
-	if !c.DryRun && (c.GitHubToken == "" || c.GitHubRepo == "") {
-		return c, fmt.Errorf("config: GITHUB_TOKEN and GITHUB_REPO are required unless DRY_RUN=true")
+	if c.GitHubAppID != 0 && len(c.GitHubAppKey) == 0 {
+		return c, fmt.Errorf("config: GITHUB_APP_ID is set but GITHUB_APP_PRIVATE_KEY(_FILE) is missing")
+	}
+	switch c.DashboardAuth {
+	case "github":
+		if len(c.AllowedUsers) == 0 && c.AllowedOrg == "" {
+			return c, fmt.Errorf("config: DASHBOARD_AUTH=github needs ALLOWED_USERS and/or ALLOWED_ORG (or DASHBOARD_AUTH=none for local use only)")
+		}
+	case "none":
+	default:
+		return c, fmt.Errorf("config: DASHBOARD_AUTH must be github or none, got %q", c.DashboardAuth)
 	}
 	switch c.AIProvider {
 	case "anthropic", "openai", "none", "template":
@@ -83,7 +128,17 @@ func Load() (Config, error) {
 	if c.AIProvider == "openai" && c.AIModel == "" {
 		return c, fmt.Errorf("config: AI_MODEL is required for AI_PROVIDER=openai")
 	}
-	return c, err
+	return c, nil
+}
+
+func splitList(v string) []string {
+	var out []string
+	for _, s := range strings.Split(v, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func env(k, def string) string {

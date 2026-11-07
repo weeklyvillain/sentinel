@@ -2,12 +2,15 @@ package reporter
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/weeklyvillain/sentinel/internal/ai"
 	"github.com/weeklyvillain/sentinel/internal/event"
 	"github.com/weeklyvillain/sentinel/internal/github"
+	"github.com/weeklyvillain/sentinel/internal/notify"
 	"github.com/weeklyvillain/sentinel/internal/store"
 )
 
@@ -49,7 +52,8 @@ type Reporter struct {
 	Store     *store.Store
 	Processor *Processor
 	AI        ai.Provider
-	GitHub    github.API
+	Router    Router
+	Notify    notify.Notifier
 	Log       *slog.Logger
 	Now       func() time.Time
 	StartedAt time.Time
@@ -58,12 +62,12 @@ type Reporter struct {
 }
 
 // New builds a reporter. StartedAt defaults to now.
-func New(cfg Config, st *store.Store, provider ai.Provider, gh github.API, log *slog.Logger) *Reporter {
+func New(cfg Config, st *store.Store, provider ai.Provider, router Router, log *slog.Logger) *Reporter {
 	cfg.defaults()
 	if log == nil {
 		log = slog.Default()
 	}
-	r := &Reporter{Cfg: cfg, Store: st, AI: provider, GitHub: gh, Log: log, Now: time.Now}
+	r := &Reporter{Cfg: cfg, Store: st, AI: provider, Router: router, Notify: notify.Nop{}, Log: log, Now: time.Now}
 	r.Processor = &Processor{Store: st, Log: log}
 	r.StartedAt = r.Now()
 	return r
@@ -132,9 +136,16 @@ func (r *Reporter) detectDown(ctx context.Context) error {
 			continue
 		}
 		r.Log.Warn("service down", "service", sv.Name, "last_seen", sv.LastSeen)
-		if _, err := r.Processor.Record(ctx, DownEvent(sv.Name, sv.Env, sv.LastSeen, now)); err != nil {
+		g, err := r.Processor.Record(ctx, DownEvent(sv.Name, sv.Env, sv.LastSeen, now))
+		if err != nil {
 			return err
 		}
+		ev := notify.Event{Type: notify.ServiceDown, Service: sv.Name, Group: groupInfo(g),
+			Message: fmt.Sprintf("%s stopped sending telemetry (last seen %s)", sv.Name, ts(sv.LastSeen))}
+		if g.IssueNumber > 0 {
+			ev.Issue = &notify.IssueInfo{Repo: g.Repo, Number: g.IssueNumber, URL: g.IssueURL}
+		}
+		r.notify(ev)
 	}
 	return nil
 }
@@ -156,11 +167,15 @@ func (r *Reporter) handleRecoveries(ctx context.Context) error {
 			outage := sv.RecoveredAt.Sub(sv.DownSince).Round(time.Second)
 			switch {
 			case g.Status == store.StatusOpen && g.IssueNumber > 0:
-				body := recoveryComment(sv, outage)
-				if err := r.GitHub.Comment(ctx, g.IssueNumber, body); err != nil {
+				gh, _, err := r.clientFor(ctx, g)
+				if err != nil {
 					return err
 				}
-				if err := r.GitHub.Close(ctx, g.IssueNumber, "completed"); err != nil {
+				body := recoveryComment(sv, outage)
+				if err := gh.Comment(ctx, g.IssueNumber, body); err != nil {
+					return err
+				}
+				if err := gh.Close(ctx, g.IssueNumber, "completed"); err != nil {
 					return err
 				}
 				if err := r.Store.SetStatus(ctx, g.ID, store.StatusResolved, g.Count); err != nil {
@@ -178,6 +193,13 @@ func (r *Reporter) handleRecoveries(ctx context.Context) error {
 		if err := r.Store.ClearRecovery(ctx, sv.Name); err != nil {
 			return err
 		}
+		ev := notify.Event{Type: notify.ServiceRecovered, Service: sv.Name,
+			Message: fmt.Sprintf("%s is sending telemetry again after %s", sv.Name, sv.RecoveredAt.Sub(sv.DownSince).Round(time.Second))}
+		if g, err := r.Store.GetGroup(ctx, DownFingerprint(sv.Name)); err == nil && g.IssueNumber > 0 {
+			ev.Group = groupInfo(g)
+			ev.Issue = &notify.IssueInfo{Repo: g.Repo, Number: g.IssueNumber, URL: g.IssueURL}
+		}
+		r.notify(ev)
 	}
 	return nil
 }
@@ -225,18 +247,30 @@ func (r *Reporter) fileGroup(ctx context.Context, g store.Group, now time.Time) 
 	}
 	marker := Marker(g.Fingerprint)
 
+	repo, err := r.Router.RepoFor(ctx, g.Service)
+	if err != nil {
+		if errors.Is(err, ErrNoRepo) {
+			return r.Store.SetBlockReason(ctx, g.ID, err.Error())
+		}
+		return err
+	}
+	gh, err := r.Router.Client(ctx, repo, g.Service)
+	if err != nil {
+		return err
+	}
+
 	// Dedupe against GitHub in case the DB was lost.
-	existing, err := r.GitHub.FindByMarker(ctx, marker)
+	existing, err := gh.FindByMarker(ctx, marker)
 	if err != nil {
 		return err
 	}
 	if existing != nil {
-		if err := r.Store.MarkIssueCreated(ctx, g.ID, existing.Number, existing.HTMLURL, g.CountAtLastReport, now, false); err != nil {
+		if err := r.Store.MarkIssueCreated(ctx, g.ID, repo, existing.Number, existing.HTMLURL, g.CountAtLastReport, now, false); err != nil {
 			return err
 		}
 		r.Log.Info("adopted existing issue", "fingerprint", g.Fingerprint, "issue", existing.Number)
-		g.Status, g.IssueNumber, g.IssueURL = store.StatusOpen, existing.Number, existing.HTMLURL
-		return r.syncOpen(ctx, g, samples, now, true)
+		g.Status, g.IssueNumber, g.IssueURL, g.Repo = store.StatusOpen, existing.Number, existing.HTMLURL, repo
+		return r.syncOpen(ctx, gh, g, samples, now, true)
 	}
 
 	draft, err := r.AI.Draft(ctx, inputFor(g, samples))
@@ -251,14 +285,18 @@ func (r *Reporter) fileGroup(ctx context.Context, g store.Group, now time.Time) 
 	}
 	draft = sanitizeDraft(draft)
 	body := IssueBody(g, draft, samples, provider)
-	iss, err := r.GitHub.CreateIssue(ctx, draft.Title, body)
+	iss, err := gh.CreateIssue(ctx, draft.Title, body)
 	if err != nil {
 		return err
 	}
-	if err := r.Store.MarkIssueCreated(ctx, g.ID, iss.Number, iss.HTMLURL, g.Count, now, true); err != nil {
+	if err := r.Store.MarkIssueCreated(ctx, g.ID, repo, iss.Number, iss.HTMLURL, g.Count, now, true); err != nil {
 		return err
 	}
-	r.Log.Info("created issue", "issue", iss.Number, "url", iss.HTMLURL, "service", g.Service, "count", g.Count, "title", draft.Title)
+	r.Log.Info("created issue", "repo", repo, "issue", iss.Number, "url", iss.HTMLURL, "service", g.Service, "count", g.Count, "title", draft.Title)
+	g.Repo, g.IssueNumber, g.IssueURL = repo, iss.Number, iss.HTMLURL
+	r.notify(notify.Event{Type: notify.IssueCreated, Service: g.Service, Group: groupInfo(g),
+		Issue:   &notify.IssueInfo{Repo: repo, Number: iss.Number, URL: iss.HTMLURL, Title: draft.Title},
+		Message: fmt.Sprintf("New issue for %s: %s (%d occurrences)", g.Service, draft.Title, g.Count)})
 	return nil
 }
 
@@ -281,7 +319,12 @@ func (r *Reporter) updateOpen(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if err := r.syncOpen(ctx, g, samples, now, due); err != nil {
+		gh, _, err := r.clientFor(ctx, g)
+		if err != nil {
+			r.Log.Error("github client", "repo", g.Repo, "err", err)
+			continue
+		}
+		if err := r.syncOpen(ctx, gh, g, samples, now, due); err != nil {
 			r.Log.Error("update issue", "issue", g.IssueNumber, "err", err)
 		}
 	}
@@ -291,8 +334,8 @@ func (r *Reporter) updateOpen(ctx context.Context) error {
 // syncOpen reconciles an open group with its issue: regression if the issue
 // was closed as completed, ignore if not_planned, otherwise an update comment
 // when due.
-func (r *Reporter) syncOpen(ctx context.Context, g store.Group, samples []store.Sample, now time.Time, due bool) error {
-	iss, err := r.GitHub.GetIssue(ctx, g.IssueNumber)
+func (r *Reporter) syncOpen(ctx context.Context, gh github.API, g store.Group, samples []store.Sample, now time.Time, due bool) error {
+	iss, err := gh.GetIssue(ctx, g.IssueNumber)
 	if err != nil {
 		return err
 	}
@@ -305,29 +348,35 @@ func (r *Reporter) syncOpen(ctx context.Context, g store.Group, samples []store.
 			// Closed and nothing new: treat as resolved; a later event reopens it.
 			return r.Store.SetStatus(ctx, g.ID, store.StatusResolved, g.Count)
 		}
-		return r.regress(ctx, g, samples, now)
+		return r.regress(ctx, gh, g, samples, now)
 	}
 	if !due || g.NewSinceReport() <= 0 {
 		return r.Store.MarkChecked(ctx, g.ID, now)
 	}
-	if err := r.GitHub.Comment(ctx, g.IssueNumber, UpdateComment(g, samples)); err != nil {
+	if err := gh.Comment(ctx, g.IssueNumber, UpdateComment(g, samples)); err != nil {
 		return err
 	}
 	r.Log.Info("posted update", "issue", g.IssueNumber, "new", g.NewSinceReport(), "total", g.Count)
+	r.notify(notify.Event{Type: notify.IssueUpdated, Service: g.Service, Group: groupInfo(g),
+		Issue:   &notify.IssueInfo{Repo: g.Repo, Number: g.IssueNumber, URL: g.IssueURL},
+		Message: fmt.Sprintf("%d new occurrence(s) of %s in %s (%d total)", g.NewSinceReport(), g.Title, g.Service, g.Count)})
 	return r.Store.MarkReported(ctx, g.ID, g.Count, now)
 }
 
-func (r *Reporter) regress(ctx context.Context, g store.Group, samples []store.Sample, now time.Time) error {
-	if err := r.GitHub.Reopen(ctx, g.IssueNumber); err != nil {
+func (r *Reporter) regress(ctx context.Context, gh github.API, g store.Group, samples []store.Sample, now time.Time) error {
+	if err := gh.Reopen(ctx, g.IssueNumber); err != nil {
 		return err
 	}
-	if err := r.GitHub.Comment(ctx, g.IssueNumber, RegressionComment(g, samples)); err != nil {
+	if err := gh.Comment(ctx, g.IssueNumber, RegressionComment(g, samples)); err != nil {
 		return err
 	}
 	if err := r.Store.SetStatus(ctx, g.ID, store.StatusOpen, -1); err != nil {
 		return err
 	}
 	r.Log.Info("regression: reopened issue", "issue", g.IssueNumber, "service", g.Service)
+	r.notify(notify.Event{Type: notify.IssueRegression, Service: g.Service, Group: groupInfo(g),
+		Issue:   &notify.IssueInfo{Repo: g.Repo, Number: g.IssueNumber, URL: g.IssueURL},
+		Message: fmt.Sprintf("Regression in %s: %s happened again", g.Service, g.Title)})
 	return r.Store.MarkReported(ctx, g.ID, g.Count, now)
 }
 
@@ -343,7 +392,12 @@ func (r *Reporter) reopenResolved(ctx context.Context) error {
 		if g.IssueNumber == 0 || g.NewSinceReport() <= 0 {
 			continue
 		}
-		iss, err := r.GitHub.GetIssue(ctx, g.IssueNumber)
+		gh, _, err := r.clientFor(ctx, g)
+		if err != nil {
+			r.Log.Error("github client", "repo", g.Repo, "err", err)
+			continue
+		}
+		iss, err := gh.GetIssue(ctx, g.IssueNumber)
 		if err != nil {
 			r.Log.Error("get issue", "issue", g.IssueNumber, "err", err)
 			continue
@@ -358,7 +412,7 @@ func (r *Reporter) reopenResolved(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if err := r.regress(ctx, g, samples, now); err != nil {
+		if err := r.regress(ctx, gh, g, samples, now); err != nil {
 			r.Log.Error("reopen issue", "issue", g.IssueNumber, "err", err)
 		}
 	}
@@ -371,4 +425,27 @@ func inputFor(g store.Group, samples []store.Sample) ai.Input {
 		in.Samples = append(in.Samples, s.Event)
 	}
 	return in
+}
+
+// clientFor returns the issue client for a group's existing issue.
+func (r *Reporter) clientFor(ctx context.Context, g store.Group) (github.API, string, error) {
+	repo := g.Repo
+	if repo == "" {
+		var err error
+		if repo, err = r.Router.RepoFor(ctx, g.Service); err != nil {
+			return nil, "", err
+		}
+	}
+	gh, err := r.Router.Client(ctx, repo, g.Service)
+	return gh, repo, err
+}
+
+func (r *Reporter) notify(ev notify.Event) {
+	if r.Notify != nil {
+		r.Notify.Notify(ev)
+	}
+}
+
+func groupInfo(g store.Group) *notify.GroupInfo {
+	return &notify.GroupInfo{ID: g.ID, Fingerprint: g.Fingerprint, Kind: string(g.Kind), Title: g.Title, Count: g.Count, Env: g.Env}
 }

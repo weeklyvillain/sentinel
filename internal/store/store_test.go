@@ -69,7 +69,7 @@ func TestReportingState(t *testing.T) {
 	s := open(t)
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	g, _ := s.RecordEvent(ctx, "fp", event.Event{Kind: event.KindLog, Service: "svc", Time: now})
-	if err := s.MarkIssueCreated(ctx, g.ID, 7, "https://x/7", g.Count, now, true); err != nil {
+	if err := s.MarkIssueCreated(ctx, g.ID, "acme/app", 7, "https://x/7", g.Count, now, true); err != nil {
 		t.Fatal(err)
 	}
 	g, _ = s.RecordEvent(ctx, "fp", event.Event{Kind: event.KindLog, Service: "svc", Time: now})

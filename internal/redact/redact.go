@@ -51,14 +51,20 @@ func Event(e *event.Event) {
 	e.ExcMessage = String(e.ExcMessage)
 	e.Stacktrace = String(e.Stacktrace)
 	e.SpanName = String(e.SpanName)
-	for k, v := range e.Attributes {
+	Attrs(e.Attributes)
+}
+
+// Attrs scrubs an attribute map in place: secret-looking keys are replaced
+// wholesale, other values are scrubbed as text.
+func Attrs(m map[string]string) {
+	for k, v := range m {
 		if k == event.FingerprintAttr {
 			continue
 		}
 		if secretKey.MatchString(k) {
-			e.Attributes[k] = Placeholder
+			m[k] = Placeholder
 			continue
 		}
-		e.Attributes[k] = String(v)
+		m[k] = String(v)
 	}
 }
