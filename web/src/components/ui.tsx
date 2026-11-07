@@ -63,7 +63,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
 // --- primitives ---
 
-export function Modal(props: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean }) {
+export function Modal(props: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean | "x" }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && props.onClose();
     window.addEventListener("keydown", onKey);
@@ -71,7 +71,7 @@ export function Modal(props: { title: string; onClose: () => void; children: Rea
   }, [props]);
   return (
     <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && props.onClose()}>
-      <div className={"modal" + (props.wide ? " wide" : "")} role="dialog" aria-label={props.title}>
+      <div className={"modal" + (props.wide === "x" ? " xwide" : props.wide ? " wide" : "")} role="dialog" aria-label={props.title}>
         <div className="modal-head">
           <h2>{props.title}</h2>
           <button className="ghost" onClick={props.onClose} aria-label="Close">
@@ -173,6 +173,7 @@ export const Icon = {
   github: I("M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"),
   search: I("M21 21l-4.35-4.35M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z"),
   uptime: I("M22 12h-4l-3 9L9 3l-3 9H2"),
+  dashboards: I("M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z"),
   ai: I("M12 3l1.9 5.8L20 10l-6.1 1.2L12 17l-1.9-5.8L4 10l6.1-1.2zM19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"),
 };
 

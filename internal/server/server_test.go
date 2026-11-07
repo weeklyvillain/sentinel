@@ -335,6 +335,46 @@ func TestAISettingsAPI(t *testing.T) {
 	}
 }
 
+func TestDashboardsAndPanelQueryAPI(t *testing.T) {
+	h := newHarness(t, AuthConfig{Mode: "none"}, "x")
+	now := time.Now().UTC().Truncate(time.Minute).Add(-5 * time.Minute)
+	var pts []store.MetricPoint
+	for i := 0; i < 5; i++ {
+		ts := now.Add(time.Duration(i) * time.Minute)
+		pts = append(pts,
+			store.MetricPoint{Time: ts, Service: "host", Name: "mem_avail", Kind: "gauge", Value: 1},
+			store.MetricPoint{Time: ts, Service: "host", Name: "mem_total", Kind: "gauge", Value: 4},
+		)
+	}
+	h.st.InsertMetrics(context.Background(), pts)
+
+	q := `{"queries":[{"id":"A","metric":"mem_avail","agg":"avg"},{"id":"B","metric":"mem_total","agg":"avg"}],"formula":"100 * (1 - A / B)"}`
+	resp, body := h.do("POST", "/api/panel/query?range=10m", q, true)
+	if resp.StatusCode != 200 || !strings.Contains(body, `"v":75`) || !strings.Contains(body, `"query":"formula"`) {
+		t.Fatalf("formula panel: %d %s", resp.StatusCode, body)
+	}
+	resp, body = h.do("POST", "/api/panel/query?range=10m", `{"queries":[{"id":"A","metric":"mem_avail","alias":"available"}]}`, true)
+	if resp.StatusCode != 200 || !strings.Contains(body, `"label":"available"`) {
+		t.Fatalf("alias: %d %s", resp.StatusCode, body)
+	}
+	if resp, body = h.do("POST", "/api/panel/query", `{"queries":[{"id":"A","metric":"m"}],"formula":"A +"}`, true); resp.StatusCode != 400 {
+		t.Fatalf("bad formula: %d %s", resp.StatusCode, body)
+	}
+
+	resp, body = h.do("POST", "/api/dashboards", `{"name":"Host","spec":{"panels":[{"type":"gauge"}]}}`, true)
+	if resp.StatusCode != 200 || !strings.Contains(body, `"id":1`) {
+		t.Fatalf("create dashboard: %d %s", resp.StatusCode, body)
+	}
+	if resp, _ = h.do("PUT", "/api/dashboards/1", `{"name":"","spec":{}}`, true); resp.StatusCode != 400 {
+		t.Fatalf("empty name accepted: %d", resp.StatusCode)
+	}
+	h.do("PUT", "/api/dashboards/1", `{"name":"Host overview","spec":{"panels":[]}}`, true)
+	_, body = h.do("GET", "/api/dashboards", "", false)
+	if !strings.Contains(body, "Host overview") {
+		t.Fatalf("list: %s", body)
+	}
+}
+
 func TestWebhookSecretMaskingAndLogsAPI(t *testing.T) {
 	h := newHarness(t, AuthConfig{Mode: "none"}, "x")
 	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))

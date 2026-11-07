@@ -12,6 +12,7 @@ import Webhooks from "./pages/Webhooks";
 import GitHub from "./pages/GitHub";
 import Uptime from "./pages/Uptime";
 import AI from "./pages/AI";
+import Dashboards, { DashboardView } from "./pages/Dashboards";
 
 const MeCtx = createContext<Me | undefined>(undefined);
 export const useMe = () => useContext(MeCtx)!;
@@ -69,6 +70,7 @@ function Shell() {
     { to: "/", label: "Overview", icon: Icon.overview, end: true },
     { to: "/logs", label: "Logs", icon: Icon.logs },
     { to: "/issues", label: "Issues", icon: Icon.issues },
+    { to: "/dashboards", label: "Dashboards", icon: Icon.dashboards },
     { to: "/metrics", label: "Metrics", icon: Icon.metrics },
     { to: "/services", label: "Services", icon: Icon.services },
     { to: "/uptime", label: "Uptime", icon: Icon.uptime, count: checksDown },
@@ -114,6 +116,8 @@ function Shell() {
           <Route path="/logs" element={<Logs />} />
           <Route path="/issues" element={<Issues />} />
           <Route path="/issues/:id" element={<IssueDetail />} />
+          <Route path="/dashboards" element={<Dashboards />} />
+          <Route path="/dashboards/:id" element={<DashboardView />} />
           <Route path="/metrics" element={<Metrics />} />
           <Route path="/services" element={<Services />} />
           <Route path="/uptime" element={<Uptime />} />
