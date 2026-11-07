@@ -275,7 +275,7 @@ func (s *Store) ListGroups(ctx context.Context, statuses ...string) ([]Group, er
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Group
+	out := []Group{}
 	for rows.Next() {
 		g, err := scanGroup(rows)
 		if err != nil {
@@ -293,7 +293,7 @@ func (s *Store) Samples(ctx context.Context, groupID int64) ([]Sample, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Sample
+	out := []Sample{}
 	for rows.Next() {
 		var sm Sample
 		var data string
@@ -374,7 +374,7 @@ func (s *Store) ListServices(ctx context.Context) ([]Service, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Service
+	out := []Service{}
 	for rows.Next() {
 		var sv Service
 		var last, since, rec int64
@@ -465,7 +465,7 @@ func (s *Store) DeleteService(ctx context.Context, name string) error {
 }
 
 func splitLabels(s string) []string {
-	var out []string
+	out := []string{}
 	for _, l := range strings.Split(s, ",") {
 		if l = strings.TrimSpace(l); l != "" {
 			out = append(out, l)
@@ -475,7 +475,7 @@ func splitLabels(s string) []string {
 }
 
 func joinLabels(ls []string) string {
-	var out []string
+	out := []string{}
 	for _, l := range ls {
 		if l = strings.TrimSpace(l); l != "" && !strings.Contains(l, ",") {
 			out = append(out, l)
