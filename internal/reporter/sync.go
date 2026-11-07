@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/weeklyvillain/sentinel/internal/github"
@@ -37,18 +38,24 @@ func (r *Reporter) syncGitHub(ctx context.Context) error {
 		if g.Status != store.StatusOpen && now.Sub(g.LastSeen) > syncIdle {
 			continue
 		}
+		// Filed while DRY_RUN was on: there is no such issue on GitHub.
+		if strings.HasPrefix(g.IssueURL, "dry-run://") {
+			continue
+		}
+		// Checked (or tried) now: a failure waits for the next interval
+		// instead of being retried every tick.
+		if err := r.Store.MarkChecked(ctx, g.ID, now); err != nil {
+			return err
+		}
 		gh, _, err := r.clientFor(ctx, g)
 		if err != nil {
-			r.Log.Error("github client", "repo", g.Repo, "err", err)
+			r.Log.Warn("github sync: no client", "repo", g.Repo, "issue", g.IssueNumber, "err", err)
 			continue
 		}
 		iss, err := gh.GetIssue(ctx, g.IssueNumber)
 		if err != nil {
-			r.Log.Error("get issue", "repo", g.Repo, "issue", g.IssueNumber, "err", err)
+			r.Log.Warn("github sync: get issue", "repo", g.Repo, "issue", g.IssueNumber, "err", err)
 			continue
-		}
-		if err := r.Store.MarkChecked(ctx, g.ID, now); err != nil {
-			return err
 		}
 		switch {
 		case g.Status == store.StatusOpen && iss.Closed():
@@ -130,7 +137,8 @@ func (r *Reporter) SetGroupStatus(ctx context.Context, id int64, action, by stri
 		return g, ErrBadAction
 	}
 
-	if g.IssueNumber > 0 {
+	// A dry-run issue exists only in the log: change the group, not GitHub.
+	if g.IssueNumber > 0 && !strings.HasPrefix(g.IssueURL, "dry-run://") {
 		gh, _, err := r.clientFor(ctx, g)
 		if err != nil {
 			return g, err
