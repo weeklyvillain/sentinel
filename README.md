@@ -209,6 +209,16 @@ docker compose up -d --build
 - Sentinel needs outbound HTTPS for GitHub, the AI provider, webhooks and
   uptime checks.
 
+#### When another proxy already owns 80/443
+
+If the host already runs a reverse proxy, use
+`docker-compose.behind-proxy.yml` instead. It runs Sentinel alone and
+publishes OTLP on `127.0.0.1:4318` and the dashboard on `127.0.0.1:18080`
+(reach it with `ssh -L 18080:localhost:18080 host`). To serve it publicly,
+paste [`deploy/Caddyfile.shared-proxy`](deploy/Caddyfile.shared-proxy) into the
+existing Caddyfile, set `PROXY_NETWORK` to that proxy's Docker network, and
+add `-f docker-compose.proxy-network.yml`. Configure dashboard sign-in first.
+
 ### 2. Every app server (OpenTelemetry Collector)
 
 Install **otelcol-contrib** and use
