@@ -106,6 +106,7 @@ func (r *Reporter) Tick(ctx context.Context) {
 	}{
 		{"down-detection", r.detectDown},
 		{"recoveries", r.handleRecoveries},
+		{"github-sync", r.syncGitHub},
 		{"new-issues", r.createIssues},
 		{"updates", r.updateOpen},
 		{"resolved-regressions", r.reopenResolved},
@@ -386,15 +387,7 @@ func (r *Reporter) syncOpen(ctx context.Context, gh github.API, g store.Group, s
 		return err
 	}
 	if iss.Closed() {
-		if iss.StateReason == "not_planned" {
-			r.Log.Info("issue closed as not planned; ignoring group", "issue", g.IssueNumber)
-			return r.Store.SetStatus(ctx, g.ID, store.StatusIgnored, g.Count)
-		}
-		if g.NewSinceReport() <= 0 {
-			// Closed and nothing new: treat as resolved; a later event reopens it.
-			return r.Store.SetStatus(ctx, g.ID, store.StatusResolved, g.Count)
-		}
-		return r.regress(ctx, gh, g, samples, now)
+		return r.closedOnGitHub(ctx, gh, g, iss, now)
 	}
 	if !due || g.NewSinceReport() <= 0 {
 		return r.Store.MarkChecked(ctx, g.ID, now)
@@ -439,6 +432,13 @@ func (r *Reporter) reopenResolved(ctx context.Context) error {
 	}
 	now := r.now()
 	for _, g := range groups {
+		if g.IssueNumber == 0 && g.NewSinceReport() > 0 {
+			// Resolved before it was ever filed, and it happened again.
+			if err := r.Store.SetStatus(ctx, g.ID, store.StatusPending, -1); err != nil {
+				return err
+			}
+			continue
+		}
 		if g.IssueNumber == 0 || g.NewSinceReport() <= 0 || off[g.Service] {
 			continue
 		}

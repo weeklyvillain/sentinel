@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -259,6 +260,13 @@ func (s *Server) handleGetGroup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"group": g, "samples": samples, "histogram": hist})
 }
 
+// GroupActions changes a group and its GitHub issue together (the reporter).
+type GroupActions interface {
+	SetGroupStatus(ctx context.Context, id int64, action, by string) (store.Group, error)
+}
+
+// handleGroupStatus closes, ignores or reopens a group, and its GitHub issue
+// with it: {"status": "resolved" | "ignored" | "open"}.
 func (s *Server) handleGroupStatus(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
 	if err != nil {
@@ -272,28 +280,29 @@ func (s *Server) handleGroupStatus(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	g, err := s.Store.GetGroupByID(r.Context(), id)
+	action := map[string]string{
+		store.StatusResolved: reporter.ActionResolve,
+		store.StatusIgnored:  reporter.ActionIgnore,
+		store.StatusOpen:     reporter.ActionReopen,
+		"active":             reporter.ActionReopen, // older UI
+	}[body.Status]
+	if action == "" {
+		writeErr(w, http.StatusBadRequest, `status must be "resolved", "ignored" or "open"`)
+		return
+	}
+	if s.Groups == nil {
+		writeErr(w, http.StatusServiceUnavailable, "group actions are not available")
+		return
+	}
+	by := ""
+	if sess, ok := s.currentUser(r); ok {
+		by = sess.Login
+	}
+	g, err := s.Groups.SetGroupStatus(r.Context(), id, action, by)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	switch body.Status {
-	case store.StatusIgnored:
-	case "active":
-		// Un-ignore: back to open if it has an issue, else pending.
-		body.Status = store.StatusPending
-		if g.IssueNumber > 0 {
-			body.Status = store.StatusOpen
-		}
-	default:
-		writeErr(w, http.StatusBadRequest, `status must be "ignored" or "active"`)
-		return
-	}
-	if err := s.Store.SetStatus(r.Context(), id, body.Status, g.Count); err != nil {
-		s.fail(w, err)
-		return
-	}
-	g, _ = s.Store.GetGroupByID(r.Context(), id)
 	writeJSON(w, http.StatusOK, g)
 }
 

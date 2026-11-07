@@ -82,6 +82,7 @@ type harness struct {
 	st     *store.Store
 	srv    *httptest.Server
 	client *http.Client
+	s      *Server
 }
 
 func newHarness(t *testing.T, auth AuthConfig, login string) *harness {
@@ -101,7 +102,7 @@ func newHarness(t *testing.T, auth AuthConfig, login string) *harness {
 	t.Cleanup(srv.Close)
 	s.PublicURL = srv.URL
 	jar, _ := cookiejar.New(nil)
-	return &harness{t: t, st: st, srv: srv, client: &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	return &harness{t: t, s: s, st: st, srv: srv, client: &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 
 func (h *harness) do(method, path, body string, csrf bool) (*http.Response, string) {
@@ -135,6 +136,29 @@ func (h *harness) signIn(code string) *http.Response {
 	}
 	resp, _ = h.do("GET", "/auth/callback?code="+code+"&state="+state, "", false)
 	return resp
+}
+
+type fakeGroups struct{ action, by string }
+
+func (f *fakeGroups) SetGroupStatus(_ context.Context, id int64, action, by string) (store.Group, error) {
+	f.action, f.by = action, by
+	return store.Group{ID: id, Status: "resolved"}, nil
+}
+
+func TestGroupStatusGoesThroughReporter(t *testing.T) {
+	h := newHarness(t, AuthConfig{Mode: "github", AllowedUsers: []string{"octocat"}}, "octocat")
+	fg := &fakeGroups{}
+	h.s.Groups = fg
+	h.signIn("good-code")
+	for status, want := range map[string]string{"resolved": "resolve", "ignored": "ignore", "open": "reopen", "active": "reopen"} {
+		resp, body := h.do("POST", "/api/groups/7/status", `{"status":"`+status+`"}`, true)
+		if resp.StatusCode != 200 || fg.action != want || fg.by != "octocat" {
+			t.Fatalf("%s: %d %s action=%q by=%q", status, resp.StatusCode, body, fg.action, fg.by)
+		}
+	}
+	if resp, _ := h.do("POST", "/api/groups/7/status", `{"status":"pending"}`, true); resp.StatusCode != 400 {
+		t.Fatalf("bad status: %d", resp.StatusCode)
+	}
 }
 
 func TestGitHubSignInAllowList(t *testing.T) {

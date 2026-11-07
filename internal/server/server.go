@@ -40,6 +40,7 @@ type Server struct {
 	AI         *ai.Switchable
 	AIEnvKey   func(provider string) string
 	Analyzer   *reporter.Analyzer
+	Groups     GroupActions
 	Puller     *ai.Puller
 	Static     fs.FS // built SPA (index.html at root); nil = API only
 	Log        *slog.Logger

@@ -132,19 +132,30 @@ export function IssueDetail() {
   const toast = useToast();
   const d = useAsync(() => api.get<Detail>(`/api/groups/${id}`), [id], 20000);
   const [sampleIdx, setSampleIdx] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
   if (d.error) return <ErrorNote error={d.error} />;
   if (!d.data) return <Loading />;
   const { group: g, samples, histogram } = d.data;
   const idx = sampleIdx ?? samples.length - 1;
   const s = samples[idx]?.event;
 
-  const setStatus = async (status: "ignored" | "active") => {
+  const setStatus = async (status: "resolved" | "ignored" | "open") => {
+    setBusy(true);
     try {
       await api.post(`/api/groups/${g.id}/status`, { status });
-      toast(status === "ignored" ? "Group ignored — Sentinel will stay quiet about it" : "Group re-activated");
+      const onGH = g.issue_number ? " (and on GitHub)" : "";
+      toast(
+        status === "resolved"
+          ? `Closed${onGH}. If it happens again, the issue is reopened.`
+          : status === "ignored"
+            ? `Ignored${onGH ? ", closed as not planned on GitHub" : ""}. Sentinel will stay quiet about it.`
+            : `Reopened${onGH}`,
+      );
       d.reload();
     } catch (e) {
       toast((e as Error).message, true);
+    } finally {
+      setBusy(false);
     }
   };
   const span = new Date(histogram[histogram.length - 1]?.t ?? g.last_seen).getTime() - new Date(histogram[0]?.t ?? g.first_seen).getTime();
@@ -169,10 +180,22 @@ export function IssueDetail() {
           <Link className="btn" to={`/logs?fingerprint=${g.fingerprint}&range=7d`}>
             <Icon.logs /> View logs
           </Link>
+          {(g.status === "open" || g.status === "pending") && (
+            <button disabled={busy} onClick={() => setStatus("resolved")} title={g.issue_number ? "Close the GitHub issue as completed" : "Mark as resolved without filing an issue"}>
+              {g.issue_number ? "Close issue" : "Resolve"}
+            </button>
+          )}
+          {g.status === "resolved" && (
+            <button disabled={busy} onClick={() => setStatus("open")} title={g.issue_number ? "Reopen the GitHub issue" : ""}>
+              Reopen
+            </button>
+          )}
           {g.status === "ignored" ? (
-            <button onClick={() => setStatus("active")}>Un-ignore</button>
+            <button disabled={busy} onClick={() => setStatus("open")}>
+              Un-ignore
+            </button>
           ) : (
-            <button className="danger" onClick={() => setStatus("ignored")}>
+            <button className="danger" disabled={busy} onClick={() => setStatus("ignored")} title={g.issue_number ? "Close the GitHub issue as not planned and stay quiet" : "Stay quiet about this group"}>
               Ignore
             </button>
           )}

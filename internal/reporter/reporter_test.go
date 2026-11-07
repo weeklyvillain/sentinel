@@ -44,6 +44,7 @@ type fakeGH struct {
 	created int
 	reopens int
 	closes  int
+	now     time.Time // the harness clock, for closed_at
 }
 
 func newFakeGH() *fakeGH { return &fakeGH{issues: map[int]*fakeIssue{}} }
@@ -72,7 +73,7 @@ func (f *fakeGH) Reopen(_ context.Context, n int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reopens++
-	f.issues[n].State, f.issues[n].StateReason = "open", "reopened"
+	f.issues[n].State, f.issues[n].StateReason, f.issues[n].ClosedAt = "open", "reopened", nil
 	return nil
 }
 func (f *fakeGH) Close(_ context.Context, n int, reason string) error {
@@ -80,6 +81,8 @@ func (f *fakeGH) Close(_ context.Context, n int, reason string) error {
 	defer f.mu.Unlock()
 	f.closes++
 	f.issues[n].State, f.issues[n].StateReason = "closed", reason
+	closed := f.now
+	f.issues[n].ClosedAt = &closed
 	return nil
 }
 func (f *fakeGH) FindByMarker(_ context.Context, marker string) (*github.Issue, error) {
@@ -98,7 +101,15 @@ func (f *fakeGH) FindByMarker(_ context.Context, marker string) (*github.Issue, 
 func (f *fakeGH) userClose(n int, reason string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.issues[n].State, f.issues[n].StateReason = "closed", reason
+	closed := f.now
+	f.issues[n].State, f.issues[n].StateReason, f.issues[n].ClosedAt = "closed", reason, &closed
+}
+
+// userReopen simulates a human reopening the issue on GitHub.
+func (f *fakeGH) userReopen(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.issues[n].State, f.issues[n].StateReason, f.issues[n].ClosedAt = "open", "reopened", nil
 }
 
 type harness struct {
@@ -123,10 +134,16 @@ func newHarness(t *testing.T, cfg Config) *harness {
 	h.r = New(cfg, st, h.ai, StaticRouter{Repo: "acme/app", API: h.gh}, log)
 	h.r.Now = func() time.Time { return h.now }
 	h.r.StartedAt = h.now
+	h.gh.now = h.now
 	return h
 }
 
-func (h *harness) advance(d time.Duration) { h.now = h.now.Add(d) }
+func (h *harness) advance(d time.Duration) {
+	h.now = h.now.Add(d)
+	h.gh.mu.Lock()
+	h.gh.now = h.now
+	h.gh.mu.Unlock()
+}
 
 func (h *harness) emit(n int, msg string) {
 	h.t.Helper()
