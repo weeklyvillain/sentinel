@@ -17,6 +17,7 @@ import (
 	"github.com/weeklyvillain/sentinel/internal/github"
 	"github.com/weeklyvillain/sentinel/internal/notify"
 	"github.com/weeklyvillain/sentinel/internal/store"
+	"github.com/weeklyvillain/sentinel/internal/uptime"
 )
 
 // AuthConfig controls who can use the dashboard.
@@ -33,6 +34,7 @@ type Server struct {
 	Auth       AuthConfig
 	PublicURL  string // e.g. https://sentinel.example.com (for OAuth callbacks)
 	Dispatcher *notify.Dispatcher
+	Prober     *uptime.Prober
 	Static     fs.FS // built SPA (index.html at root); nil = API only
 	Log        *slog.Logger
 	Info       Info
@@ -101,6 +103,13 @@ func (s *Server) Handler() http.Handler {
 	api("DELETE /api/alarms/{id}", s.handleDeleteAlarm)
 	api("POST /api/alarms/preview", s.handlePreviewAlarm)
 	api("GET /api/alarms/events", s.handleAlarmEvents)
+
+	api("GET /api/checks", s.handleListChecks)
+	api("POST /api/checks", s.handleSaveCheck)
+	api("PUT /api/checks/{id}", s.handleSaveCheck)
+	api("DELETE /api/checks/{id}", s.handleDeleteCheck)
+	api("POST /api/checks/{id}/run", s.handleRunCheck)
+	api("GET /api/checks/{id}/results", s.handleCheckResults)
 
 	api("GET /api/webhooks", s.handleListWebhooks)
 	api("POST /api/webhooks", s.handleSaveWebhook)

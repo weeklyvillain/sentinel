@@ -28,6 +28,8 @@ const (
 	IssueUpdated     = "issue.updated"
 	ServiceDown      = "service.down"
 	ServiceRecovered = "service.recovered"
+	CheckDown        = "check.down"
+	CheckRecovered   = "check.recovered"
 	AlarmFiring      = "alarm.firing"
 	AlarmResolved    = "alarm.resolved"
 	Test             = "test"
@@ -35,7 +37,7 @@ const (
 
 // EventTypes lists the subscribable event types (alarm events go to the
 // webhooks chosen on each alarm).
-var EventTypes = []string{IssueCreated, IssueRegression, IssueUpdated, ServiceDown, ServiceRecovered}
+var EventTypes = []string{IssueCreated, IssueRegression, IssueUpdated, ServiceDown, ServiceRecovered, CheckDown, CheckRecovered}
 
 // GroupInfo summarizes an error group.
 type GroupInfo struct {
@@ -283,7 +285,7 @@ func marshal(v any) ([]byte, error) {
 
 func chatText(ev Event, link func(url, label string) string) string {
 	icon := map[string]string{
-		IssueCreated: "🆕", IssueRegression: "🔁", IssueUpdated: "📈", ServiceDown: "🔴", ServiceRecovered: "🟢",
+		IssueCreated: "🆕", IssueRegression: "🔁", IssueUpdated: "📈", ServiceDown: "🔴", ServiceRecovered: "🟢", CheckDown: "🔴", CheckRecovered: "🟢",
 		AlarmFiring: "🚨", AlarmResolved: "✅", Test: "🧪",
 	}[ev.Type]
 	var b strings.Builder

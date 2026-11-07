@@ -116,7 +116,12 @@ func IssueBody(g store.Group, d ai.Draft, samples []store.Sample, provider strin
 
 	if g.Kind == event.KindDown && len(samples) > 0 {
 		last := samples[len(samples)-1].Event
-		fmt.Fprintf(&b, "No telemetry received since **%s**.\n\n", cell(last.Attributes["sentinel.last_seen"]))
+		if name := last.Attributes[CheckAttr]; name != "" {
+			fmt.Fprintf(&b, "Uptime check `%s` → `%s` has been failing since **%s** (probed from the Sentinel server).\n\nLast error: `%s`\n\n",
+				cell(name), cell(last.Attributes["url.full"]), cell(last.Attributes["sentinel.down_since"]), cell(last.Attributes["error"]))
+		} else {
+			fmt.Fprintf(&b, "No telemetry received since **%s**.\n\n", cell(last.Attributes["sentinel.last_seen"]))
+		}
 	}
 
 	if ids := traceIDs(samples, 5); len(ids) > 0 {
@@ -159,6 +164,11 @@ func UpdateComment(g store.Group, samples []store.Sample) string {
 func RegressionComment(g store.Group, samples []store.Sample) string {
 	var b strings.Builder
 	if g.Kind == event.KindDown {
+		if len(samples) > 0 && samples[len(samples)-1].Event.Attributes[CheckAttr] != "" {
+			a := samples[len(samples)-1].Event.Attributes
+			fmt.Fprintf(&b, "**Down again:** uptime check `%s` is failing (%s): `%s`\n", cell(a[CheckAttr]), ts(g.LastSeen), cell(a["error"]))
+			return b.String()
+		}
 		fmt.Fprintf(&b, "**Regression:** `%s` stopped sending telemetry again (%s).\n", cell(g.Service), ts(g.LastSeen))
 		return b.String()
 	}

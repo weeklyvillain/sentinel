@@ -1,5 +1,5 @@
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { api, Overview as OverviewT } from "../api";
+import { api, Check, Overview as OverviewT } from "../api";
 import { bucketKeys, Legend, StackedBars } from "../components/charts";
 import { Empty, ErrorNote, Loading, RangePicker, Stat, StatusBadge, useAsync } from "../components/ui";
 import { ago, fmtNum, LEVEL_COLORS, serviceUp } from "../util";
@@ -11,6 +11,9 @@ export default function Overview() {
   const range = params.get("range") ?? "24h";
   const nav = useNavigate();
   const { data, error } = useAsync(() => api.get<OverviewT>(`/api/overview?range=${range}`), [range], 30000);
+  const checks = useAsync(() => api.get<Check[]>("/api/checks"), [], 30000);
+  const activeChecks = (checks.data ?? []).filter((c) => c.enabled);
+  const checksDown = activeChecks.filter((c) => c.state === "down");
 
   return (
     <>
@@ -36,6 +39,14 @@ export default function Overview() {
             <Stat label={`Errors (${range})`} value={fmtNum(data.errors)} hint={`${fmtNum(data.logs)} log lines`} tone={data.errors ? "bad" : undefined} />
             <Stat label={`New issues (${range})`} value={fmtNum(data.issues_in_range)} />
             <Stat label="Alarms firing" value={data.firing_alarms.length} tone={data.firing_alarms.length ? "bad" : "ok"} />
+            {activeChecks.length > 0 && (
+              <Stat
+                label="Uptime checks"
+                value={`${activeChecks.length - checksDown.length}/${activeChecks.length}`}
+                hint={checksDown.length ? `down: ${checksDown.map((c) => c.name).join(", ")}` : "all passing"}
+                tone={checksDown.length ? "bad" : "ok"}
+              />
+            )}
           </div>
 
           {data.firing_alarms.length > 0 && (

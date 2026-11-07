@@ -347,6 +347,7 @@ func (s *Store) Prune(ctx context.Context, logsBefore, metricsBefore time.Time) 
 		{`DELETE FROM metric_points WHERE rowid IN (SELECT rowid FROM metric_points WHERE ts < ? LIMIT 20000)`, metricsBefore},
 		{`DELETE FROM webhook_deliveries WHERE ts < ?`, logsBefore},
 		{`DELETE FROM alarm_events WHERE ts < ?`, metricsBefore.Add(-30 * 24 * time.Hour)},
+		{`DELETE FROM check_results WHERE rowid IN (SELECT rowid FROM check_results WHERE ts < ? LIMIT 20000)`, metricsBefore},
 		{`DELETE FROM sessions WHERE expires_at < ?`, time.Now()},
 	} {
 		if q.t.IsZero() {

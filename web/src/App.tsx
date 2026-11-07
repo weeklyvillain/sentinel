@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect } from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
-import { api, Alarm, Me } from "./api";
+import { api, Alarm, Check, Me } from "./api";
 import { Icon, Loading, Logo, useAsync } from "./components/ui";
 import Overview from "./pages/Overview";
 import Logs from "./pages/Logs";
@@ -10,6 +10,7 @@ import Services from "./pages/Services";
 import Alarms from "./pages/Alarms";
 import Webhooks from "./pages/Webhooks";
 import GitHub from "./pages/GitHub";
+import Uptime from "./pages/Uptime";
 
 const MeCtx = createContext<Me | undefined>(undefined);
 export const useMe = () => useContext(MeCtx)!;
@@ -59,12 +60,15 @@ function Shell() {
   const me = useMe();
   const alarms = useAsync(() => api.get<Alarm[]>("/api/alarms"), [], 30000);
   const firing = (alarms.data ?? []).filter((a) => a.enabled && a.state === "firing").length;
+  const checks = useAsync(() => api.get<Check[]>("/api/checks"), [], 30000);
+  const checksDown = (checks.data ?? []).filter((c) => c.enabled && c.state === "down").length;
   const nav = [
     { to: "/", label: "Overview", icon: Icon.overview, end: true },
     { to: "/logs", label: "Logs", icon: Icon.logs },
     { to: "/issues", label: "Issues", icon: Icon.issues },
     { to: "/metrics", label: "Metrics", icon: Icon.metrics },
     { to: "/services", label: "Services", icon: Icon.services },
+    { to: "/uptime", label: "Uptime", icon: Icon.uptime, count: checksDown },
     { to: "/alarms", label: "Alarms", icon: Icon.alarms, count: firing },
     { to: "/webhooks", label: "Webhooks", icon: Icon.webhooks },
     { to: "/github", label: "GitHub", icon: Icon.github },
@@ -108,6 +112,7 @@ function Shell() {
           <Route path="/issues/:id" element={<IssueDetail />} />
           <Route path="/metrics" element={<Metrics />} />
           <Route path="/services" element={<Services />} />
+          <Route path="/uptime" element={<Uptime />} />
           <Route path="/alarms" element={<Alarms />} />
           <Route path="/webhooks" element={<Webhooks />} />
           <Route path="/github" element={<GitHub />} />

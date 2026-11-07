@@ -1,0 +1,50 @@
+# Sentinel on its own server, behind Caddy (HTTPS).
+#
+#   cd deploy && cp .env.example .env   # fill it in
+#   docker compose up -d --build
+#
+# Point DNS for SENTINEL_DOMAIN at this server and open ports 80 and 443.
+name: sentinel
+
+services:
+  sentinel:
+    build:
+      context: ..
+    image: sentinel:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SENTINEL_DB: /data/sentinel.db
+      PUBLIC_URL: https://${SENTINEL_DOMAIN:?set SENTINEL_DOMAIN in .env}
+      INGEST_TOKEN: ${INGEST_TOKEN:?set INGEST_TOKEN in .env}
+      GITHUB_APP_PRIVATE_KEY_FILE: /secrets/github-app.pem
+    volumes:
+      - sentinel-data:/data
+      - ./secrets:/secrets:ro
+    # Not published: only reachable through Caddy.
+    expose:
+      - "4318"
+      - "8080"
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    depends_on: [sentinel]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      SENTINEL_DOMAIN: ${SENTINEL_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  sentinel-data:
+  caddy-data:
+  caddy-config:

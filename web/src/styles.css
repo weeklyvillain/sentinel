@@ -94,7 +94,7 @@ h3 { font-size: 13px; margin: 0 0 8px; font-weight: 600; color: var(--muted); te
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; }
 .card + .card { margin-top: 16px; }
 .grid > .card + .card, .stack > .card + .card { margin-top: 0; }
-.card.flush { padding: 0; overflow: hidden; }
+.card.flush { padding: 0; overflow-x: auto; }
 .card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .card-head h2 { margin: 0; }
 .card-head .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
