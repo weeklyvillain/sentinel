@@ -23,6 +23,8 @@ type Issue struct {
 	State       string `json:"state"`        // open | closed
 	StateReason string `json:"state_reason"` // completed | not_planned | reopened | ""
 	Title       string `json:"title"`
+	// ClosedAt is when the issue was last closed (nil while open).
+	ClosedAt *time.Time `json:"closed_at"`
 }
 
 // Closed reports whether the issue is closed.
@@ -235,7 +237,7 @@ func (d *DryRun) Reopen(_ context.Context, number int) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if iss, ok := d.issues[number]; ok {
-		iss.State, iss.StateReason = "open", "reopened"
+		iss.State, iss.StateReason, iss.ClosedAt = "open", "reopened", nil
 	}
 	d.log().Info("DRY_RUN reopen issue", "number", number)
 	return nil
@@ -245,7 +247,8 @@ func (d *DryRun) Close(_ context.Context, number int, reason string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if iss, ok := d.issues[number]; ok {
-		iss.State, iss.StateReason = "closed", reason
+		now := time.Now().UTC()
+		iss.State, iss.StateReason, iss.ClosedAt = "closed", reason, &now
 	}
 	d.log().Info("DRY_RUN close issue", "number", number, "reason", reason)
 	return nil

@@ -124,7 +124,7 @@ func run(log *slog.Logger) error {
 	}
 	srv := &server.Server{
 		Store: st, App: app, PublicURL: cfg.PublicURL, Dispatcher: dispatcher, Prober: prober, Static: static, Log: log,
-		AI: provider, AIEnvKey: envKey, Analyzer: analyzer, Puller: &ai.Puller{},
+		AI: provider, AIEnvKey: envKey, Analyzer: analyzer, Puller: &ai.Puller{}, Groups: rep,
 		Auth: server.AuthConfig{Mode: cfg.DashboardAuth, AllowedUsers: cfg.AllowedUsers, AllowedOrg: cfg.AllowedOrg},
 		Info: server.Info{
 			DryRun: cfg.DryRun, TokenMode: app == nil && cfg.GitHubToken != "", EnvDefaultRepo: cfg.GitHubRepo,
