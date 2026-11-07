@@ -73,8 +73,23 @@ func run(log *slog.Logger) error {
 		log.Warn("GitHub is not connected (no GitHub App or GITHUB_TOKEN); groups stay pending until it is")
 	}
 
-	provider := buildProvider(cfg, log)
+	// AI settings start from AI_* and can be changed in the dashboard.
+	envKey := func(provider string) string {
+		switch provider {
+		case "anthropic":
+			if cfg.AnthropicAPIKey != "" {
+				return cfg.AnthropicAPIKey
+			}
+			return os.Getenv("ANTHROPIC_AUTH_TOKEN")
+		case "openai":
+			return cfg.OpenAIAPIKey
+		}
+		return ""
+	}
+	aiDefaults := ai.Settings{Provider: cfg.AIProvider, Model: cfg.AIModel, BaseURL: cfg.OpenAIBaseURL, TimeoutS: int(cfg.AITimeout / time.Second)}
+	provider := ai.NewSwitchable(server.LoadAISettings(context.Background(), st, aiDefaults), envKey)
 	log.Info("AI provider", "name", provider.Name())
+	analyzer := &reporter.Analyzer{Store: st, AI: provider, Log: log}
 
 	dispatcher := &notify.Dispatcher{Store: st, Log: log}
 	rep := reporter.New(reporter.Config{
@@ -86,6 +101,7 @@ func run(log *slog.Logger) error {
 		DownAfter:        cfg.DownAfter,
 	}, st, provider, router, log)
 	rep.Notify = dispatcher
+	rep.Analyzer = analyzer
 	alarms := &alarm.Evaluator{Store: st, Notify: dispatcher, Log: log}
 	prober := &uptime.Prober{Store: st, Handler: rep, Log: log}
 
@@ -108,6 +124,7 @@ func run(log *slog.Logger) error {
 	}
 	srv := &server.Server{
 		Store: st, App: app, PublicURL: cfg.PublicURL, Dispatcher: dispatcher, Prober: prober, Static: static, Log: log,
+		AI: provider, AIEnvKey: envKey, Analyzer: analyzer, Puller: &ai.Puller{},
 		Auth: server.AuthConfig{Mode: cfg.DashboardAuth, AllowedUsers: cfg.AllowedUsers, AllowedOrg: cfg.AllowedOrg},
 		Info: server.Info{
 			DryRun: cfg.DryRun, TokenMode: app == nil && cfg.GitHubToken != "", EnvDefaultRepo: cfg.GitHubRepo,
@@ -134,6 +151,7 @@ func run(log *slog.Logger) error {
 	}
 	log.Info("dashboard", "url", cfg.PublicURL)
 	go rep.Run(ctx)
+	go analyzer.Run(ctx)
 	go alarms.Run(ctx)
 	go prober.Run(ctx)
 	go dispatcher.Run(ctx)
@@ -170,37 +188,6 @@ func janitor(ctx context.Context, st *store.Store, cfg config.Config, log *slog.
 			return
 		case <-t.C:
 		}
-	}
-}
-
-// timeoutProvider bounds each draft call.
-type timeoutProvider struct {
-	ai.Provider
-	d time.Duration
-}
-
-func (t timeoutProvider) Draft(ctx context.Context, in ai.Input) (ai.Draft, error) {
-	ctx, cancel := context.WithTimeout(ctx, t.d)
-	defer cancel()
-	return t.Provider.Draft(ctx, in)
-}
-
-func buildProvider(cfg config.Config, log *slog.Logger) ai.Provider {
-	var p ai.Provider
-	switch cfg.AIProvider {
-	case "anthropic":
-		if cfg.AnthropicAPIKey == "" && os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
-			log.Warn("AI_PROVIDER=anthropic but ANTHROPIC_API_KEY is not set; using SDK default credentials (falls back to template on error)")
-		}
-		p = ai.NewAnthropic(cfg.AnthropicAPIKey, cfg.AIModel, "")
-	case "openai":
-		p = &ai.OpenAICompat{BaseURL: cfg.OpenAIBaseURL, APIKey: cfg.OpenAIAPIKey, Model: cfg.AIModel}
-	default:
-		return ai.Template{}
-	}
-	return ai.WithFallback{
-		Primary: timeoutProvider{Provider: p, d: cfg.AITimeout},
-		OnError: func(err error) { log.Warn("AI provider failed; using template draft", "err", err) },
 	}
 }
 

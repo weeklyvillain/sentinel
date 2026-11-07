@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/weeklyvillain/sentinel/internal/ai"
+	"github.com/weeklyvillain/sentinel/internal/reporter"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -35,6 +37,10 @@ type Server struct {
 	PublicURL  string // e.g. https://sentinel.example.com (for OAuth callbacks)
 	Dispatcher *notify.Dispatcher
 	Prober     *uptime.Prober
+	AI         *ai.Switchable
+	AIEnvKey   func(provider string) string
+	Analyzer   *reporter.Analyzer
+	Puller     *ai.Puller
 	Static     fs.FS // built SPA (index.html at root); nil = API only
 	Log        *slog.Logger
 	Info       Info
@@ -50,6 +56,15 @@ type Info struct {
 	MetricRetention string `json:"metric_retention"`
 	DownAfter       string `json:"down_after"`
 	OTLPAddr        string `json:"otlp_addr"`
+}
+
+// info is Info with the AI provider as it is now (it can change at runtime).
+func (s *Server) info() Info {
+	in := s.Info
+	if s.AI != nil {
+		in.AIProvider = s.AI.Name()
+	}
+	return in
 }
 
 func (s *Server) log() *slog.Logger {
@@ -79,6 +94,13 @@ func (s *Server) Handler() http.Handler {
 	api("PUT /api/services/{name}", s.handleSaveService)
 	api("DELETE /api/services/{name}", s.handleDeleteService)
 	api("PATCH /api/services/{name}", s.handleServiceFlags)
+	api("GET /api/ai", s.handleGetAI)
+	api("PUT /api/ai", s.handlePutAI)
+	api("POST /api/ai/test", s.handleTestAI)
+	api("GET /api/ai/models", s.handleAIModels)
+	api("POST /api/ai/pull", s.handleAIPull)
+	api("GET /api/analyses", s.handleListAnalyses)
+	api("POST /api/analyses/{id}/retry", s.handleRetryAnalysis)
 
 	api("GET /api/groups", s.handleListGroups)
 	api("GET /api/groups/{id}", s.handleGetGroup)

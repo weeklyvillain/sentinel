@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect } from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
-import { api, Alarm, Check, Me } from "./api";
+import { api, Alarm, Analysis, Check, Me } from "./api";
 import { Icon, Loading, Logo, useAsync } from "./components/ui";
 import Overview from "./pages/Overview";
 import Logs from "./pages/Logs";
@@ -11,6 +11,7 @@ import Alarms from "./pages/Alarms";
 import Webhooks from "./pages/Webhooks";
 import GitHub from "./pages/GitHub";
 import Uptime from "./pages/Uptime";
+import AI from "./pages/AI";
 
 const MeCtx = createContext<Me | undefined>(undefined);
 export const useMe = () => useContext(MeCtx)!;
@@ -62,6 +63,8 @@ function Shell() {
   const firing = (alarms.data ?? []).filter((a) => a.enabled && a.state === "firing").length;
   const checks = useAsync(() => api.get<Check[]>("/api/checks"), [], 30000);
   const checksDown = (checks.data ?? []).filter((c) => c.enabled && c.state === "down").length;
+  const analyses = useAsync(() => api.get<Analysis[]>("/api/analyses"), [], 15000);
+  const analyzing = (analyses.data ?? []).filter((a) => a.status === "queued" || a.status === "running").length;
   const nav = [
     { to: "/", label: "Overview", icon: Icon.overview, end: true },
     { to: "/logs", label: "Logs", icon: Icon.logs },
@@ -71,6 +74,7 @@ function Shell() {
     { to: "/uptime", label: "Uptime", icon: Icon.uptime, count: checksDown },
     { to: "/alarms", label: "Alarms", icon: Icon.alarms, count: firing },
     { to: "/webhooks", label: "Webhooks", icon: Icon.webhooks },
+    { to: "/ai", label: "AI", icon: Icon.ai, count: analyzing },
     { to: "/github", label: "GitHub", icon: Icon.github },
   ];
   const logout = async () => {
@@ -115,6 +119,7 @@ function Shell() {
           <Route path="/uptime" element={<Uptime />} />
           <Route path="/alarms" element={<Alarms />} />
           <Route path="/webhooks" element={<Webhooks />} />
+          <Route path="/ai" element={<AI />} />
           <Route path="/github" element={<GitHub />} />
           <Route path="*" element={<div className="empty">Page not found</div>} />
         </Routes>
