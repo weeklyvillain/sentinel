@@ -3,7 +3,13 @@ module github.com/weeklyvillain/sentinel
 go 1.26.0
 
 require (
-	github.com/anthropics/anthropic-sdk-go/v2 v2.7.0 // indirect
+	github.com/anthropics/anthropic-sdk-go/v2 v2.7.0
+	go.opentelemetry.io/proto/otlp v1.11.1
+	google.golang.org/protobuf v1.36.12
+	modernc.org/sqlite v1.62.0
+)
+
+require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
@@ -24,13 +30,10 @@ require (
 	go.opentelemetry.io/otel v1.33.0 // indirect
 	go.opentelemetry.io/otel/metric v1.33.0 // indirect
 	go.opentelemetry.io/otel/trace v1.33.0 // indirect
-	go.opentelemetry.io/proto/otlp v1.11.1 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
-	google.golang.org/protobuf v1.36.12 // indirect
 	modernc.org/libc v1.80.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
-	modernc.org/sqlite v1.62.0 // indirect
 )
