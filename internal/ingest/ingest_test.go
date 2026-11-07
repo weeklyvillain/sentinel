@@ -202,6 +202,45 @@ func TestMetricsConversion(t *testing.T) {
 	}
 }
 
+// Two instances of one service report the same cumulative counter with their
+// own running totals (and start times). Their totals must never be
+// subtracted from each other: that turned every point into a "reset" and
+// stored ever-growing totals instead of per-interval deltas.
+func TestCumulativeCountersPerInstance(t *testing.T) {
+	srv, s := server(t)
+	post := func(instance, start string, total int) {
+		body := `{"resourceMetrics":[{"resource":{"attributes":[
+		    {"key":"service.name","value":{"stringValue":"api"}},
+		    {"key":"service.instance.id","value":{"stringValue":"` + instance + `"}}]},
+		 "scopeMetrics":[{"metrics":[
+		  {"name":"requests","sum":{"isMonotonic":true,"aggregationTemporality":2,"dataPoints":[
+		    {"asInt":"` + itoa(total) + `","startTimeUnixNano":"` + start + `","timeUnixNano":"1767225600000000000"}]}}]}]}]}`
+		resp, err := http.Post(srv.URL+"/v1/metrics", "application/json", strings.NewReader(body))
+		if err != nil || resp.StatusCode != 200 {
+			t.Fatalf("post: %v %v", err, resp)
+		}
+	}
+	post("a", "1", 1000) // baselines
+	post("b", "2", 50)
+	post("a", "1", 1010)
+	post("b", "2", 55)
+	post("a", "1", 1030)
+	post("b", "2", 56)
+	var got []float64
+	for _, p := range s.metrics {
+		got = append(got, p.Value)
+	}
+	want := []float64{10, 5, 20, 1}
+	if len(got) != len(want) {
+		t.Fatalf("deltas: got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("deltas: got %v, want %v", got, want)
+		}
+	}
+}
+
 func itoa(n int) string { return strconv.Itoa(n) }
 
 func TestIngestToken(t *testing.T) {

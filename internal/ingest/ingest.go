@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -233,6 +234,16 @@ func fixJSONIDs(body []byte) ([]byte, error) {
 type resInfo struct {
 	service, env string
 	attrs        map[string]string
+}
+
+// key identifies the sending process by all its resource attributes.
+func (ri resInfo) key() string {
+	parts := make([]string, 0, len(ri.attrs))
+	for k, v := range ri.attrs {
+		parts = append(parts, k+"="+v)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "\x1f")
 }
 
 func resourceInfo(res *resourcepb.Resource) resInfo {
@@ -459,7 +470,7 @@ func (r *Receiver) metrics(ctx context.Context, body []byte, isJSON bool) error 
 		r.heartbeat(ctx, seen, ri)
 		for _, sm := range rm.GetScopeMetrics() {
 			for _, m := range sm.GetMetrics() {
-				pts = append(pts, r.deltas().convert(ri.service, m, r.now())...)
+				pts = append(pts, r.deltas().convert(ri.service, ri.key(), m, r.now())...)
 			}
 		}
 	}
