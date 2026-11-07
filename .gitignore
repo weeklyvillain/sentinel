@@ -1,0 +1,5 @@
+.claude/worktrees/
+/bin/
+*.db
+*.db-*
+.env
