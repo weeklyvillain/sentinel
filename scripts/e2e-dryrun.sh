@@ -21,7 +21,7 @@ go build -o "$BIN" ./cmd/sentinel
 cleanup() { [[ -n "${PID:-}" ]] && kill "$PID" 2>/dev/null || true; }
 trap cleanup EXIT
 
-DRY_RUN=true AI_PROVIDER=none DASHBOARD_AUTH=none \
+DRY_RUN=true AI_PROVIDER=none DASHBOARD_AUTH=none INGEST_TOKEN=e2e-token \
 SENTINEL_OTLP_ADDR="127.0.0.1:$PORT" SENTINEL_HTTP_ADDR="127.0.0.1:$HTTP_PORT" SENTINEL_DB="$WORK/sentinel.db" \
 SETTLE_WINDOW=2s TICK_INTERVAL=1s MIN_EVENTS=3 DOWN_AFTER=0 \
   "$BIN" >"$LOG" 2>&1 &
@@ -31,6 +31,10 @@ for _ in $(seq 50); do
   curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1 && break
   sleep 0.2
 done
+
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/v1/logs" -H 'Content-Type: application/json' -d '{}')
+if [[ "$code" != 401 ]]; then echo "FAIL: request without ingest token got HTTP $code"; exit 1; fi
+echo "unauthenticated OTLP request rejected (401)"
 
 echo "POSTing $BURST error logs to /v1/logs ..."
 for i in $(seq 1 "$BURST"); do
@@ -47,7 +51,7 @@ for i in $(seq 1 "$BURST"); do
  }]}]}]}
 JSON
 )
-  curl -fsS -X POST "http://127.0.0.1:$PORT/v1/logs" -H 'Content-Type: application/json' -d "$body" >/dev/null
+  curl -fsS -X POST "http://127.0.0.1:$PORT/v1/logs" -H 'Content-Type: application/json' -H 'Authorization: Bearer e2e-token' -d "$body" >/dev/null
 done
 
 echo "waiting for the settle window + a reporter tick ..."

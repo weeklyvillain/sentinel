@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/weeklyvillain/sentinel/internal/ai"
@@ -59,6 +60,8 @@ type Reporter struct {
 	StartedAt time.Time
 
 	capLogged time.Time
+	// mu serializes Tick with uptime-check transitions.
+	mu sync.Mutex
 }
 
 // New builds a reporter. StartedAt defaults to now.
@@ -91,6 +94,8 @@ func (r *Reporter) Run(ctx context.Context) {
 
 // Tick runs one reporting pass.
 func (r *Reporter) Tick(ctx context.Context) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	steps := []struct {
 		name string
 		fn   func(context.Context) error

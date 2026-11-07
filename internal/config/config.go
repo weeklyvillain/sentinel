@@ -11,10 +11,11 @@ import (
 
 // Config is the full runtime configuration.
 type Config struct {
-	OTLPAddr      string // SENTINEL_OTLP_ADDR, default :4318
-	DashboardAddr string // SENTINEL_HTTP_ADDR, default :8080 (dashboard + API)
-	PublicURL     string // PUBLIC_URL, default http://localhost:8080 (OAuth callbacks)
-	DBPath        string // SENTINEL_DB, default sentinel.db
+	OTLPAddr      string   // SENTINEL_OTLP_ADDR, default :4318
+	IngestTokens  []string // INGEST_TOKEN: comma-separated bearer tokens accepted on /v1/* (empty = no auth)
+	DashboardAddr string   // SENTINEL_HTTP_ADDR, default :8080 (dashboard + API)
+	PublicURL     string   // PUBLIC_URL, default http://localhost:8080 (OAuth callbacks)
+	DBPath        string   // SENTINEL_DB, default sentinel.db
 
 	DashboardAuth string   // DASHBOARD_AUTH: github (default) | none
 	AllowedUsers  []string // ALLOWED_USERS: GitHub logins allowed to sign in
@@ -62,6 +63,7 @@ func (c Config) AppConfigured() bool { return c.GitHubAppID != 0 && len(c.GitHub
 func Load() (Config, error) {
 	c := Config{
 		OTLPAddr:              env("SENTINEL_OTLP_ADDR", ":4318"),
+		IngestTokens:          splitList(os.Getenv("INGEST_TOKEN")),
 		DashboardAddr:         env("SENTINEL_HTTP_ADDR", ":8080"),
 		PublicURL:             strings.TrimRight(env("PUBLIC_URL", "http://localhost:8080"), "/"),
 		DBPath:                env("SENTINEL_DB", "sentinel.db"),
@@ -95,7 +97,9 @@ func Load() (Config, error) {
 	c.AITimeout = p.dur("AI_TIMEOUT", 60*time.Second)
 	c.DryRun = p.bool("DRY_RUN", false)
 	c.GitHubAppID = int64(p.int("GITHUB_APP_ID", 0))
-	if k := os.Getenv("GITHUB_APP_PRIVATE_KEY"); k != "" {
+	if c.GitHubAppID == 0 {
+		// No app: ignore key settings (the Compose file always sets the path).
+	} else if k := os.Getenv("GITHUB_APP_PRIVATE_KEY"); k != "" {
 		// Allow the PEM to be passed with literal \n sequences.
 		c.GitHubAppKey = []byte(strings.ReplaceAll(k, `\n`, "\n"))
 	} else if f := os.Getenv("GITHUB_APP_PRIVATE_KEY_FILE"); f != "" {

@@ -76,8 +76,10 @@ from the OTLP port):
 - **Alarms** – rules evaluated every 15s: *log count* (matching text, level,
   service, window), *metric threshold* (aggregate over a window) and *service
   down*. A preview shows the current value; state changes are kept as history.
+- **Uptime** – HTTP checks run from the Sentinel server (see below).
 - **Webhooks** – Slack, Discord or generic JSON targets for `issue.created`,
-  `issue.regression`, `issue.updated`, `service.down`, `service.recovered`
+  `issue.regression`, `issue.updated`, `service.down`, `service.recovered`,
+  `check.down`, `check.recovered`
   (alarm notifications go to the webhooks chosen on each alarm). JSON
   deliveries carry `X-Sentinel-Event` and, with a secret,
   `X-Sentinel-Signature: sha256=<HMAC-SHA256(secret, body)>`. Failures (network,
@@ -162,6 +164,94 @@ that they became one group and one (logged) issue, that all 50 lines are
 searchable through the dashboard API, and that no secret is in the output or
 the stored logs. Use `PORT=14318 HTTP_PORT=18090` if the defaults are taken.
 
+## Deploying on a separate server
+
+Run Sentinel on its **own** machine, not on the servers it watches. Then an
+app server dying, rebooting or losing its network shows up in Sentinel (as a
+service going quiet, failing uptime checks, an issue and webhooks) instead of
+taking the monitoring down with it.
+
+```
+ app server(s)                                     Sentinel server
+ ┌──────────────────────────────┐   HTTPS + token   ┌──────────────────────────────┐
+ │ apps ─OTLP─▶ otelcol-contrib │ ────────────────▶ │ Caddy :443 ─▶ sentinel       │
+ │   (disk-backed retry queue,  │   /v1/logs …      │   /v1/*  → OTLP :4318        │
+ │    host metrics)             │                   │   /*     → dashboard :8080   │
+ └──────────────────────────────┘  ◀── uptime ───── │   uptime checks, GitHub,     │
+                                     checks (HTTP)  │   webhooks (outbound)        │
+                                                    └──────────────────────────────┘
+```
+
+### 1. Sentinel server (Docker Compose)
+
+```bash
+git clone <this repo> sentinel && cd sentinel/deploy
+cp .env.example .env            # set SENTINEL_DOMAIN, INGEST_TOKEN, GitHub App, ...
+openssl rand -hex 32            # a good INGEST_TOKEN
+cp ~/Downloads/your-app.private-key.pem secrets/github-app.pem
+docker compose up -d --build
+```
+
+- Point DNS for `SENTINEL_DOMAIN` at the server and open ports **80** and
+  **443** (Caddy gets a Let's Encrypt certificate automatically). Ports 4318
+  and 8080 are not published; everything goes through Caddy.
+- Caddy routes `/v1/*` to the OTLP receiver and everything else to the
+  dashboard, so collectors and browsers use the same `https://SENTINEL_DOMAIN`.
+- `INGEST_TOKEN` is required by the Compose file: collectors must send
+  `Authorization: Bearer <token>`. Several comma-separated tokens are accepted,
+  so you can rotate without downtime.
+- Data lives in the `sentinel-data` volume (`/data/sentinel.db`). Back it up
+  with e.g. `docker compose exec` + `sqlite3 .backup`, or snapshot the volume.
+- Upgrade: `git pull && docker compose up -d --build`. The schema migrates
+  itself on start.
+- The image has a `HEALTHCHECK` (`sentinel healthcheck`), so `docker ps` shows
+  whether it is healthy.
+- Sentinel needs outbound HTTPS for GitHub, the AI provider, webhooks and
+  uptime checks.
+
+### 2. Every app server (OpenTelemetry Collector)
+
+Install **otelcol-contrib** and use
+[`deploy/otel-collector-app-server.yaml`](deploy/otel-collector-app-server.yaml)
+with:
+
+```bash
+SENTINEL_ENDPOINT=https://sentinel.example.com
+SENTINEL_INGEST_TOKEN=<the INGEST_TOKEN>
+HOST_SERVICE_NAME=host-app-1
+```
+
+It:
+
+- receives OTLP from the apps on that machine (`localhost:4317/4318`),
+- forwards logs, traces and metrics to Sentinel over HTTPS with gzip,
+- keeps a **disk-backed retry queue**, so data produced while Sentinel or the
+  network is unreachable is delivered when it comes back,
+- sends **host metrics** (CPU, memory, disk, network, load) as a service named
+  `HOST_SERVICE_NAME`. Sentinel then shows the server's own charts and flags
+  the whole machine as down when it goes quiet.
+
+### 3. Uptime checks
+
+On **Uptime** in the dashboard, add the public health URLs of your apps (e.g.
+`https://shop.example.com/healthz`). Sentinel probes them from its own server
+on an interval, with an expected status (`2xx`, `200,204`, …) and optional
+body text. After N consecutive failures the check is **down**: Sentinel files
+(or reopens) an issue for it, in the repository of the service you link it to,
+and sends `check.down` to webhooks. When it passes again the issue is closed
+with the outage length and `check.recovered` is sent.
+
+Uptime checks and telemetry tell you different things. A failing check with
+telemetry still arriving points at DNS, TLS, the proxy or the network.
+Telemetry gone *and* checks failing means the server or app is down.
+Telemetry gone with checks passing means the collector or network path to
+Sentinel broke.
+
+### Who watches Sentinel?
+
+Sentinel cannot report its own outage. Point an external uptime service (or
+another Sentinel) at `https://SENTINEL_DOMAIN/healthz`.
+
 ## Configuration
 
 All configuration is via environment variables. Durations accept Go syntax
@@ -171,6 +261,7 @@ All configuration is via environment variables. Durations accept Go syntax
 |---|---|---|
 | `SENTINEL_OTLP_ADDR` | `:4318` | OTLP/HTTP listen address |
 | `SENTINEL_HTTP_ADDR` | `:8080` | Dashboard + API listen address |
+| `INGEST_TOKEN` | – | Comma-separated bearer tokens required on `/v1/*` (set it whenever the OTLP port is reachable from other machines) |
 | `PUBLIC_URL` | `http://localhost:8080` | External dashboard URL (OAuth and setup callbacks) |
 | `SENTINEL_DB` | `sentinel.db` | SQLite database path |
 | `DASHBOARD_AUTH` | `github` | `github` (sign in with GitHub) or `none` (local only) |
@@ -231,7 +322,9 @@ processors:
 
 exporters:
   otlphttp/sentinel:
-    endpoint: http://sentinel:4318   # the exporter appends /v1/logs, /v1/traces, /v1/metrics
+    endpoint: https://sentinel.example.com   # the exporter appends /v1/logs, /v1/traces, /v1/metrics
+    headers:
+      Authorization: "Bearer ${env:SENTINEL_INGEST_TOKEN}"
     compression: gzip
     # encoding: json                 # protobuf (default) and json both work
 
@@ -273,7 +366,8 @@ Layout: `internal/ingest` (OTLP receiver, metric conversion), `internal/redact`,
 read pool in WAL mode, FTS5 log index), `internal/reporter` (issue lifecycle,
 down detection, repository routing), `internal/ai` (Anthropic,
 OpenAI-compatible, template), `internal/github` (REST client, GitHub App auth,
-dry-run), `internal/alarm`, `internal/notify` (webhooks), `internal/server`
+dry-run), `internal/alarm`, `internal/notify` (webhooks), `internal/uptime`
+(HTTP checks), `internal/server`
 (dashboard API and auth), `internal/web` (embedded build of `web/`, the React
 app), `cmd/sentinel`, `cmd/sentinel-demo`.
 

@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/weeklyvillain/sentinel/internal/event"
 )
@@ -14,6 +15,19 @@ type Template struct{}
 func (Template) Name() string { return "template" }
 
 func (Template) Draft(_ context.Context, in Input) (Draft, error) {
+	if in.Kind == event.KindDown && len(in.Samples) > 0 && in.Samples[len(in.Samples)-1].Attributes["sentinel.check"] != "" {
+		at := in.Samples[len(in.Samples)-1].Attributes
+		return Draft{
+			Title:       fmt.Sprintf("[%s] uptime check %q is failing", in.Service, at["sentinel.check"]),
+			Summary:     fmt.Sprintf("Sentinel cannot reach %s from outside: %s.", at["url.full"], strings.TrimRight(at["error"], ".")),
+			LikelyCause: "The app or its server is down, unreachable from the network, or returning errors (check DNS, TLS, the proxy or load balancer, and the app itself).",
+			NextSteps: []string{
+				"Open the URL yourself and check whether the server and app are up.",
+				"Compare with the service's telemetry: if logs and metrics still arrive, the problem is likely network, DNS, TLS or the proxy in front of the app.",
+				"Look at recent deploys or infrastructure changes.",
+			},
+		}, nil
+	}
 	if in.Kind == event.KindDown {
 		return Draft{
 			Title:       fmt.Sprintf("[%s] service stopped sending telemetry", in.Service),

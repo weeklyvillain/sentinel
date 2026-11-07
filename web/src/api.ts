@@ -252,3 +252,40 @@ export interface Overview {
   firing_alarms: Alarm[];
   service_list: Service[];
 }
+
+export interface CheckStats {
+  probes: number;
+  failures: number;
+  uptime_pct: number;
+  avg_latency_ms: number;
+}
+
+export interface Check {
+  id: number;
+  name: string;
+  url: string;
+  method: "GET" | "HEAD";
+  interval_s: number;
+  timeout_s: number;
+  expect_status: string;
+  body_contains: string;
+  service: string;
+  failures_before_down: number;
+  enabled: boolean;
+  state: "pending" | "up" | "down";
+  consecutive_failures: number;
+  down_since?: string;
+  last_checked?: string;
+  last_status: number;
+  last_latency_ms: number;
+  last_error?: string;
+  stats_24h?: CheckStats;
+}
+
+export interface CheckResult {
+  t: string;
+  ok: boolean;
+  status: number;
+  latency_ms: number;
+  error?: string;
+}

@@ -9,6 +9,7 @@ package ingest
 import (
 	"compress/gzip"
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -52,8 +53,11 @@ type Receiver struct {
 	// MinSeverity is the lowest severity_number treated as an error (17 = ERROR).
 	MinSeverity  int32
 	MaxBodyBytes int64
-	Log          *slog.Logger
-	Now          func() time.Time
+	// Tokens, if non-empty, are the accepted bearer tokens
+	// ("Authorization: Bearer <token>"). Empty disables authentication.
+	Tokens []string
+	Log    *slog.Logger
+	Now    func() time.Time
 
 	deltaOnce sync.Once
 	delta     *deltaTracker
@@ -75,8 +79,34 @@ type decodeFn func(ctx context.Context, body []byte, isJSON bool) error
 
 var errUnsupported = errors.New("unsupported content type")
 
+// authorized checks the bearer token in constant time.
+func (r *Receiver) authorized(req *http.Request) bool {
+	if len(r.Tokens) == 0 {
+		return true
+	}
+	h := req.Header.Get("Authorization")
+	tok, ok := strings.CutPrefix(h, "Bearer ")
+	if !ok {
+		tok, ok = strings.CutPrefix(h, "bearer ")
+	}
+	if !ok || tok == "" {
+		return false
+	}
+	match := 0
+	for _, t := range r.Tokens {
+		match |= subtle.ConstantTimeCompare([]byte(tok), []byte(t))
+	}
+	return match == 1
+}
+
 func (r *Receiver) handle(fn decodeFn) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
+		if !r.authorized(req) {
+			ct, _, _ := mime.ParseMediaType(req.Header.Get("Content-Type"))
+			w.Header().Set("WWW-Authenticate", `Bearer realm="sentinel-otlp"`)
+			writeStatus(w, ct == "application/json", http.StatusUnauthorized, "missing or invalid ingest token")
+			return
+		}
 		ct, _, _ := mime.ParseMediaType(req.Header.Get("Content-Type"))
 		var isJSON bool
 		switch ct {
@@ -128,14 +158,18 @@ func (r *Receiver) handle(fn decodeFn) http.HandlerFunc {
 }
 
 // writeStatus writes an OTLP google.rpc.Status-shaped error.
-func writeStatus(w http.ResponseWriter, isJSON bool, code int, msg string) {
+func writeStatus(w http.ResponseWriter, isJSON bool, status int, msg string) {
 	if isJSON {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(code)
-		json.NewEncoder(w).Encode(map[string]any{"code": 3, "message": msg})
+		w.WriteHeader(status)
+		code := 3 // INVALID_ARGUMENT
+		if status == http.StatusUnauthorized {
+			code = 16 // UNAUTHENTICATED
+		}
+		json.NewEncoder(w).Encode(map[string]any{"code": code, "message": msg})
 		return
 	}
-	http.Error(w, msg, code)
+	http.Error(w, msg, status)
 }
 
 func (r *Receiver) log() *slog.Logger {

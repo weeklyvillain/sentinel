@@ -268,3 +268,23 @@ func TestWebhookSecretMaskingAndLogsAPI(t *testing.T) {
 		t.Fatal("overview")
 	}
 }
+
+func TestChecksAPI(t *testing.T) {
+	h := newHarness(t, AuthConfig{Mode: "none"}, "x")
+	for body, want := range map[string]int{
+		`{"name":"a","url":"ftp://x"}`:                                    400,
+		`{"name":"a","url":"https://x","interval_s":5}`:                   400,
+		`{"name":"a","url":"https://x","timeout_s":30,"interval_s":30}`:   400,
+		`{"name":"a","url":"https://x","expect_status":"6xx"}`:            400,
+		`{"name":"a","url":"https://x","method":"POST"}`:                  400,
+		`{"name":"api","url":"https://x.example/healthz","enabled":true}`: 200,
+	} {
+		if resp, b := h.do("POST", "/api/checks", body, true); resp.StatusCode != want {
+			t.Errorf("%s: got %d %s", body, resp.StatusCode, b)
+		}
+	}
+	_, body := h.do("GET", "/api/checks", "", false)
+	if !strings.Contains(body, `"interval_s":60`) || !strings.Contains(body, `"expect_status":"2xx"`) || !strings.Contains(body, `"uptime_pct":100`) {
+		t.Fatalf("defaults/stats: %s", body)
+	}
+}

@@ -6,7 +6,9 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,10 +24,16 @@ import (
 	"github.com/weeklyvillain/sentinel/internal/reporter"
 	"github.com/weeklyvillain/sentinel/internal/server"
 	"github.com/weeklyvillain/sentinel/internal/store"
+	"github.com/weeklyvillain/sentinel/internal/uptime"
 	"github.com/weeklyvillain/sentinel/internal/web"
 )
 
 func main() {
+	// `sentinel healthcheck` is used by the container HEALTHCHECK (the image
+	// has no shell or curl).
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(healthcheck())
+	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(log)
 	if err := run(log); err != nil {
@@ -79,8 +87,12 @@ func run(log *slog.Logger) error {
 	}, st, provider, router, log)
 	rep.Notify = dispatcher
 	alarms := &alarm.Evaluator{Store: st, Notify: dispatcher, Log: log}
+	prober := &uptime.Prober{Store: st, Handler: rep, Log: log}
 
-	recv := &ingest.Receiver{Sink: rep.Processor, MinSeverity: cfg.MinSeverity, Log: log}
+	recv := &ingest.Receiver{Sink: rep.Processor, MinSeverity: cfg.MinSeverity, Tokens: cfg.IngestTokens, Log: log}
+	if len(cfg.IngestTokens) == 0 && !loopback(cfg.OTLPAddr) {
+		log.Warn("INGEST_TOKEN is not set: anyone who can reach " + cfg.OTLPAddr + " can send telemetry. Set INGEST_TOKEN when the OTLP port is reachable from other machines.")
+	}
 	otlpMux := http.NewServeMux()
 	recv.Register(otlpMux)
 	otlpMux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok\n")) })
@@ -95,7 +107,7 @@ func run(log *slog.Logger) error {
 		log.Warn("dashboard UI not embedded; build it with: npm --prefix web ci && npm --prefix web run build")
 	}
 	srv := &server.Server{
-		Store: st, App: app, PublicURL: cfg.PublicURL, Dispatcher: dispatcher, Static: static, Log: log,
+		Store: st, App: app, PublicURL: cfg.PublicURL, Dispatcher: dispatcher, Prober: prober, Static: static, Log: log,
 		Auth: server.AuthConfig{Mode: cfg.DashboardAuth, AllowedUsers: cfg.AllowedUsers, AllowedOrg: cfg.AllowedOrg},
 		Info: server.Info{
 			DryRun: cfg.DryRun, TokenMode: app == nil && cfg.GitHubToken != "", EnvDefaultRepo: cfg.GitHubRepo,
@@ -123,6 +135,7 @@ func run(log *slog.Logger) error {
 	log.Info("dashboard", "url", cfg.PublicURL)
 	go rep.Run(ctx)
 	go alarms.Run(ctx)
+	go prober.Run(ctx)
 	go dispatcher.Run(ctx)
 	go janitor(ctx, st, cfg, log)
 
@@ -189,4 +202,40 @@ func buildProvider(cfg config.Config, log *slog.Logger) ai.Provider {
 		Primary: timeoutProvider{Provider: p, d: cfg.AITimeout},
 		OnError: func(err error) { log.Warn("AI provider failed; using template draft", "err", err) },
 	}
+}
+
+// loopback reports whether addr only listens on the local machine.
+func loopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func healthcheck() int {
+	addr := os.Getenv("SENTINEL_HTTP_ADDR")
+	if addr == "" {
+		addr = ":8080"
+	}
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		port = "8080"
+	}
+	c := &http.Client{Timeout: 3 * time.Second}
+	resp, err := c.Get("http://127.0.0.1:" + port + "/healthz")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "unhealthy:", err)
+		return 1
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintln(os.Stderr, "unhealthy: HTTP", resp.StatusCode)
+		return 1
+	}
+	return 0
 }

@@ -203,3 +203,32 @@ func TestMetricsConversion(t *testing.T) {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+func TestIngestToken(t *testing.T) {
+	s := &sink{}
+	mux := http.NewServeMux()
+	(&Receiver{Sink: s, Tokens: []string{"tok-a", "tok-b"}}).Register(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	send := func(auth string) int {
+		req, _ := http.NewRequest("POST", srv.URL+"/v1/logs", strings.NewReader(logsJSON))
+		req.Header.Set("Content-Type", "application/json")
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	for auth, want := range map[string]int{"": 401, "Bearer wrong": 401, "tok-a": 401, "Bearer tok-a": 200, "Bearer tok-b": 200} {
+		if got := send(auth); got != want {
+			t.Errorf("auth %q: got %d want %d", auth, got, want)
+		}
+	}
+	if len(s.events) != 6 { // two accepted requests x 3 errors
+		t.Errorf("events: %d", len(s.events))
+	}
+}

@@ -1,0 +1,15 @@
+# Caddy terminates HTTPS (automatic Let's Encrypt certificates) and routes:
+#   /v1/*  -> Sentinel's OTLP/HTTP receiver (collectors; INGEST_TOKEN required)
+#   *      -> the dashboard
+{$SENTINEL_DOMAIN} {
+	handle /v1/* {
+		request_body {
+			max_size 32MB
+		}
+		reverse_proxy sentinel:4318
+	}
+	handle {
+		reverse_proxy sentinel:8080
+	}
+	header Strict-Transport-Security "max-age=31536000"
+}
