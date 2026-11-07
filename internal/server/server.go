@@ -113,6 +113,13 @@ func (s *Server) Handler() http.Handler {
 
 	api("GET /api/metrics", s.handleMetricList)
 	api("GET /api/metrics/query", s.handleMetricQuery)
+	api("GET /api/metrics/attrs", s.handleMetricAttrs)
+	api("POST /api/panel/query", s.handlePanelQuery)
+	api("GET /api/dashboards", s.handleListDashboards)
+	api("POST /api/dashboards", s.handleSaveDashboard)
+	api("GET /api/dashboards/{id}", s.handleGetDashboard)
+	api("PUT /api/dashboards/{id}", s.handleSaveDashboard)
+	api("DELETE /api/dashboards/{id}", s.handleDeleteDashboard)
 
 	api("GET /api/github", s.handleGitHubStatus)
 	api("POST /api/github/sync", s.handleGitHubSync)
