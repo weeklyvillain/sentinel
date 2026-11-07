@@ -29,13 +29,16 @@ type Handler interface {
 type Prober struct {
 	Store       *store.Store
 	Handler     Handler
-	HTTP        *http.Client // default: no cookie jar, 5 redirects
+	HTTP        *http.Client // default: no cookie jar, no keep-alive, 5 redirects
 	Log         *slog.Logger
 	Now         func() time.Time
 	Concurrency int // default 8
 
 	mu       sync.Mutex
 	inFlight map[int64]bool
+
+	httpOnce    sync.Once
+	defaultHTTP *http.Client
 }
 
 func (p *Prober) now() time.Time {
@@ -56,12 +59,20 @@ func (p *Prober) client() *http.Client {
 	if p.HTTP != nil {
 		return p.HTTP
 	}
-	return &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 5 {
-			return errors.New("too many redirects")
-		}
-		return nil
-	}}
+	p.httpOnce.Do(func() {
+		// Every probe resolves DNS and connects anew, like a first-time
+		// visitor. A pooled keep-alive connection would keep probing an old
+		// address (say, a CDN edge) after DNS has moved on.
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.DisableKeepAlives = true
+		p.defaultHTTP = &http.Client{Transport: tr, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return errors.New("too many redirects")
+			}
+			return nil
+		}}
+	})
+	return p.defaultHTTP
 }
 
 // Run probes due checks every second until ctx is done.
