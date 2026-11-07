@@ -223,6 +223,25 @@ func mustParse(t *testing.T, s string) *url.URL {
 	return u
 }
 
+// A fresh install has no services, groups or checks yet. The UI reads list
+// fields with .length/.map, so they must be [] and never null.
+func TestEmptyInstallReturnsNoNullLists(t *testing.T) {
+	h := newHarness(t, AuthConfig{Mode: "none"}, "x")
+	for _, path := range []string{
+		"/api/overview", "/api/services", "/api/groups", "/api/logs?range=1h",
+		"/api/checks", "/api/alarms", "/api/webhooks", "/api/metrics",
+	} {
+		resp, body := h.do("GET", path, "", false)
+		if resp.StatusCode != 200 {
+			t.Errorf("%s: HTTP %d %s", path, resp.StatusCode, body)
+			continue
+		}
+		if strings.Contains(body, "null") {
+			t.Errorf("%s returned null on an empty install: %s", path, body)
+		}
+	}
+}
+
 func TestWebhookSecretMaskingAndLogsAPI(t *testing.T) {
 	h := newHarness(t, AuthConfig{Mode: "none"}, "x")
 	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
