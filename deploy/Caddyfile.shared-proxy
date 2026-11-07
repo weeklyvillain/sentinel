@@ -1,0 +1,16 @@
+# Site block for an existing Caddy that already owns 80/443 (for example the
+# app's own Caddy). Paste it into that Caddyfile, and run Sentinel with
+# docker-compose.behind-proxy.yml + docker-compose.proxy-network.yml so the
+# proxy can reach "sentinel" on its Docker network.
+sentinel.example.com {
+	handle /v1/* {
+		request_body {
+			max_size 32MB
+		}
+		reverse_proxy sentinel:4318
+	}
+	handle {
+		reverse_proxy sentinel:8080
+	}
+	header Strict-Transport-Security "max-age=31536000"
+}
