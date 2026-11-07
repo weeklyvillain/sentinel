@@ -258,6 +258,66 @@ export interface Overview {
   service_list: Service[];
 }
 
+export interface AISettings {
+  provider: "anthropic" | "openai" | "none";
+  model: string;
+  base_url: string;
+  timeout_s: number;
+  has_api_key?: boolean;
+  env_api_key?: boolean;
+}
+
+export interface AIPull {
+  model: string;
+  status: string;
+  completed: number;
+  total: number;
+  done: boolean;
+  error?: string;
+  started_at: string;
+}
+
+export interface AIState {
+  settings: AISettings;
+  provider_name: string;
+  pull?: AIPull | null;
+}
+
+export interface AIModel {
+  name: string;
+  size?: number;
+}
+
+export interface AIDraft {
+  title: string;
+  summary: string;
+  likely_cause: string;
+  next_steps: string[];
+}
+
+export interface AITestResult {
+  provider: string;
+  took_ms: number;
+  draft?: AIDraft;
+  error?: string;
+}
+
+export interface Analysis {
+  id: number;
+  group_id: number;
+  status: "queued" | "running" | "done" | "failed";
+  provider?: string;
+  queued_at: string;
+  started_at?: string;
+  finished_at?: string;
+  error?: string;
+  draft?: string;
+  service: string;
+  group_title: string;
+  group_status: GroupStatus;
+  issue_url?: string;
+}
+
 export interface CheckStats {
   probes: number;
   failures: number;

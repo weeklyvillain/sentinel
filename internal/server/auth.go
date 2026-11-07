@@ -87,7 +87,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"github_sign_in": s.githubAuthReady(),
 		"signed_in":      ok,
 		"github_app":     s.App != nil,
-		"info":           s.Info,
+		"info":           s.info(),
 		"csrf_header":    CSRFHeader,
 	}
 	if ok {

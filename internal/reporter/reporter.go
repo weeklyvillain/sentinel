@@ -53,6 +53,10 @@ type Reporter struct {
 	Store     *store.Store
 	Processor *Processor
 	AI        ai.Provider
+	// Analyzer, when set, drafts issue text in the background (the analysis
+	// queue); issues are filed once their analysis finished. Without it the
+	// reporter drafts inline (tests, simple setups).
+	Analyzer  *Analyzer
 	Router    Router
 	Notify    notify.Notifier
 	Log       *slog.Logger
@@ -256,14 +260,27 @@ func (r *Reporter) createIssues(ctx context.Context) error {
 				return nil
 			}
 		}
-		if err := r.fileGroup(ctx, g, now); err != nil {
+		var pre *ai.Draft
+		// Outages skip the queue: they must be filed now, and the template
+		// describes them well.
+		if r.Analyzer != nil && g.Kind != event.KindDown {
+			d, ready, err := r.queuedDraft(ctx, g, now)
+			if err != nil {
+				return err
+			}
+			if !ready {
+				continue
+			}
+			pre = &d
+		}
+		if err := r.fileGroup(ctx, g, now, pre); err != nil {
 			r.Log.Error("file issue", "fingerprint", g.Fingerprint, "err", err)
 		}
 	}
 	return nil
 }
 
-func (r *Reporter) fileGroup(ctx context.Context, g store.Group, now time.Time) error {
+func (r *Reporter) fileGroup(ctx context.Context, g store.Group, now time.Time, pre *ai.Draft) error {
 	samples, err := r.Store.Samples(ctx, g.ID)
 	if err != nil {
 		return err
@@ -296,8 +313,10 @@ func (r *Reporter) fileGroup(ctx context.Context, g store.Group, now time.Time) 
 		return r.syncOpen(ctx, gh, g, samples, now, true)
 	}
 
-	draft, err := r.AI.Draft(ctx, inputFor(g, samples))
-	if err != nil {
+	var draft ai.Draft
+	if pre != nil {
+		draft = *pre
+	} else if draft, err = r.AI.Draft(ctx, inputFor(g, samples)); err != nil {
 		r.Log.Warn("AI draft failed, using template", "err", err)
 		draft, _ = ai.Template{}.Draft(ctx, inputFor(g, samples))
 		draft.Provider = "template (fallback after provider error)"

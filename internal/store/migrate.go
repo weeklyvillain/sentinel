@@ -138,6 +138,9 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(schemaChecks); err != nil {
 		return err
 	}
+	if _, err := s.db.Exec(schemaAnalyses); err != nil {
+		return err
+	}
 	cols := []struct{ table, col, def string }{
 		{"groups", "repo", "TEXT NOT NULL DEFAULT ''"},
 		{"groups", "block_reason", "TEXT NOT NULL DEFAULT ''"},

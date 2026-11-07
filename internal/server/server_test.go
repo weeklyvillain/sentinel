@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"github.com/weeklyvillain/sentinel/internal/ai"
 	"io"
 	"log/slog"
 	"net/http"
@@ -92,8 +93,10 @@ func newHarness(t *testing.T, auth AuthConfig, login string) *harness {
 	gh := fakeGitHub(t, login)
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
 	app := &github.App{ID: 1, Slug: "sentinel-test", ClientID: "cid", ClientSecret: "csecret", Key: key, BaseURL: gh.URL, WebURL: gh.URL}
+	envKey := func(string) string { return "" }
 	s := &Server{Store: st, App: app, Auth: auth, Dispatcher: &notify.Dispatcher{Store: st},
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		AI:  ai.NewSwitchable(ai.Settings{Provider: "none", TimeoutS: 60}, envKey), AIEnvKey: envKey, Puller: &ai.Puller{}}
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 	s.PublicURL = srv.URL
@@ -259,6 +262,52 @@ func TestServiceFlagsAPI(t *testing.T) {
 	}
 	if resp, _ := h.do("PATCH", "/api/services/nope", `{"watch":true}`, true); resp.StatusCode != 404 {
 		t.Fatalf("unknown service: %d", resp.StatusCode)
+	}
+}
+
+func TestAISettingsAPI(t *testing.T) {
+	h := newHarness(t, AuthConfig{Mode: "none"}, "x")
+	// A fake OpenAI-compatible server (like Ollama's /v1).
+	var gotAuth string
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		switch r.URL.Path {
+		case "/api/tags":
+			w.Write([]byte(`{"models":[{"name":"qwen2.5:1.5b","size":986000000}]}`))
+		case "/v1/chat/completions":
+			w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"title\":\"checkout: payment capture times out\",\"summary\":\"s\",\"likely_cause\":\"c\",\"next_steps\":[\"a\"]}"}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer llm.Close()
+	body := `{"provider":"openai","model":"qwen2.5:1.5b","base_url":"` + llm.URL + `/v1","api_key":"sk-local-secret","timeout_s":300}`
+
+	resp, out := h.do("PUT", "/api/ai", `{"provider":"openai","model":"","base_url":"x","timeout_s":1}`, true)
+	if resp.StatusCode != 400 {
+		t.Fatalf("invalid settings accepted: %d %s", resp.StatusCode, out)
+	}
+	resp, out = h.do("POST", "/api/ai/test", body, true)
+	if resp.StatusCode != 200 || !strings.Contains(out, "payment capture times out") || gotAuth != "Bearer sk-local-secret" {
+		t.Fatalf("test draft: %d %s (auth %q)", resp.StatusCode, out, gotAuth)
+	}
+	resp, out = h.do("PUT", "/api/ai", body, true)
+	if resp.StatusCode != 200 || strings.Contains(out, "sk-local-secret") || !strings.Contains(out, `"has_api_key":true`) ||
+		!strings.Contains(out, "openai-compatible:qwen2.5:1.5b") {
+		t.Fatalf("save: %d %s", resp.StatusCode, out)
+	}
+	// Saving again without a key keeps the stored one.
+	h.do("PUT", "/api/ai", strings.Replace(body, `"api_key":"sk-local-secret",`, "", 1), true)
+	if got := LoadAISettings(context.Background(), h.st, ai.Settings{}); got.APIKey != "sk-local-secret" || got.TimeoutS != 300 {
+		t.Fatalf("stored settings: %+v", got)
+	}
+	_, out = h.do("GET", "/api/ai/models", "", false)
+	if !strings.Contains(out, "qwen2.5:1.5b") {
+		t.Fatalf("models: %s", out)
+	}
+	_, out = h.do("GET", "/api/analyses", "", false)
+	if strings.TrimSpace(out) != "[]" {
+		t.Fatalf("analyses: %q", out)
 	}
 }
 
