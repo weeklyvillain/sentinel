@@ -145,6 +145,10 @@ func (s *Store) migrate() error {
 		{"services", "labels", "TEXT NOT NULL DEFAULT ''"},
 		{"services", "managed", "INTEGER NOT NULL DEFAULT 0"},
 		{"services", "description", "TEXT NOT NULL DEFAULT ''"},
+		// issues: file GitHub issues for this service. watch: flag the service
+		// as down when it goes quiet (opt-in, from the Uptime page).
+		{"services", "issues", "INTEGER NOT NULL DEFAULT 1"},
+		{"services", "watch", "INTEGER NOT NULL DEFAULT 0"},
 	}
 	for _, c := range cols {
 		if err := s.addColumn(c.table, c.col, c.def); err != nil {

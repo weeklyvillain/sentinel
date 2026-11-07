@@ -70,6 +70,11 @@ type Service struct {
 	Labels      []string  `json:"labels,omitempty"`
 	Managed     bool      `json:"managed"`
 	Description string    `json:"description,omitempty"`
+	// Issues: file GitHub issues for this service (default on).
+	Issues bool `json:"issues"`
+	// Watch: flag the service as down when it stops sending telemetry for
+	// DOWN_AFTER (opt-in).
+	Watch bool `json:"watch"`
 }
 
 // Store wraps the SQLite database.
@@ -369,7 +374,7 @@ func (s *Store) TouchService(ctx context.Context, name, env string, now time.Tim
 
 // ListServices returns all known services.
 func (s *Store) ListServices(ctx context.Context) ([]Service, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT name, env, last_seen, down, down_since, recovered_at, repo, labels, managed, description FROM services ORDER BY name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT name, env, last_seen, down, down_since, recovered_at, repo, labels, managed, description, issues, watch FROM services ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -378,11 +383,12 @@ func (s *Store) ListServices(ctx context.Context) ([]Service, error) {
 	for rows.Next() {
 		var sv Service
 		var last, since, rec int64
-		var down, managed int
+		var down, managed, issues, watch int
 		var labels string
-		if err := rows.Scan(&sv.Name, &sv.Env, &last, &down, &since, &rec, &sv.Repo, &labels, &managed, &sv.Description); err != nil {
+		if err := rows.Scan(&sv.Name, &sv.Env, &last, &down, &since, &rec, &sv.Repo, &labels, &managed, &sv.Description, &issues, &watch); err != nil {
 			return nil, err
 		}
+		sv.Issues, sv.Watch = issues == 1, watch == 1
 		sv.Labels = splitLabels(labels)
 		sv.Managed = managed == 1
 		sv.LastSeen, sv.DownSince, sv.RecoveredAt = fromMs(last), fromMs(since), fromMs(rec)
@@ -393,11 +399,11 @@ func (s *Store) ListServices(ctx context.Context) ([]Service, error) {
 }
 
 // MarkServiceDown flags a service as down since the given time. It only
-// succeeds (returns true) if the service is not already down and has not been
-// seen after since.
+// succeeds (returns true) if the service is watched, not already down and has
+// not been seen after since.
 func (s *Store) MarkServiceDown(ctx context.Context, name string, since time.Time) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `UPDATE services SET down = 1, down_since = ?, recovered_at = 0
-		WHERE name = ? AND down = 0 AND last_seen > 0 AND last_seen <= ?`, ms(since), name, ms(since))
+		WHERE name = ? AND watch = 1 AND down = 0 AND last_seen > 0 AND last_seen <= ?`, ms(since), name, ms(since))
 	if err != nil {
 		return false, err
 	}
@@ -455,6 +461,42 @@ func (s *Store) UpsertServiceConfig(ctx context.Context, c ServiceConfig) error 
 		INSERT INTO services (name, last_seen, repo, labels, managed, description) VALUES (?, 0, ?, ?, 1, ?)
 		ON CONFLICT(name) DO UPDATE SET repo = excluded.repo, labels = excluded.labels, managed = 1, description = excluded.description`,
 		c.Name, c.Repo, joinLabels(c.Labels), c.Description)
+	return err
+}
+
+// ServiceFlags are the per-service switches; nil leaves a flag unchanged.
+type ServiceFlags struct {
+	Issues *bool `json:"issues"`
+	Watch  *bool `json:"watch"`
+}
+
+// SetServiceFlags turns issue creation and down detection on or off. A
+// service that is no longer watched also stops being down: nobody asked to
+// know, so there is nothing to recover from.
+func (s *Store) SetServiceFlags(ctx context.Context, name string, f ServiceFlags) error {
+	b := func(p *bool, col string) string {
+		if p == nil {
+			return col
+		}
+		if *p {
+			return "1"
+		}
+		return "0"
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE services SET issues = `+b(f.Issues, "issues")+`, watch = `+b(f.Watch, "watch")+` WHERE name = ?`, name)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return s.ClearUnwatchedDown(ctx)
+}
+
+// ClearUnwatchedDown resets the down state of services that are not watched
+// (for example ones flagged before watching became opt-in).
+func (s *Store) ClearUnwatchedDown(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE services SET down = 0, down_since = 0, recovered_at = 0 WHERE watch = 0 AND (down = 1 OR recovered_at > 0)`)
 	return err
 }
 

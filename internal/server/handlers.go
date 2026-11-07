@@ -181,6 +181,27 @@ func (s *Server) handleDeleteService(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// handleServiceFlags switches issue creation and down detection for a
+// service: {"issues": false} and/or {"watch": true}.
+func (s *Server) handleServiceFlags(w http.ResponseWriter, r *http.Request) {
+	var f store.ServiceFlags
+	if err := readJSON(r, &f); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	name := r.PathValue("name")
+	if err := s.Store.SetServiceFlags(r.Context(), name, f); err != nil {
+		s.fail(w, err)
+		return
+	}
+	sv, err := s.Store.GetService(r.Context(), name)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sv)
+}
+
 // --- groups ---
 
 func (s *Server) handleListGroups(w http.ResponseWriter, r *http.Request) {

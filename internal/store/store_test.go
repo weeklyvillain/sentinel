@@ -104,6 +104,13 @@ func TestServices(t *testing.T) {
 	if err := s.TouchService(ctx, "api", "prod", t0); err != nil {
 		t.Fatal(err)
 	}
+	if ok, _ := s.MarkServiceDown(ctx, "api", t0); ok {
+		t.Fatal("an unwatched service must never be marked down")
+	}
+	watch := true
+	if err := s.SetServiceFlags(ctx, "api", ServiceFlags{Watch: &watch}); err != nil {
+		t.Fatal(err)
+	}
 	ok, err := s.MarkServiceDown(ctx, "api", t0)
 	if err != nil || !ok {
 		t.Fatalf("mark down: %v %v", ok, err)

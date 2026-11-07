@@ -2,7 +2,8 @@ import { Fragment, useState } from "react";
 import { api, Bucket, Check, CheckResult, CheckStats, Service } from "../api";
 import { SeriesChart, StackedBars } from "../components/charts";
 import { Empty, ErrorNote, Loading, Modal, RangePicker, Switch, useAsync, useToast } from "../components/ui";
-import { ago, fmtDuration, fmtFull, fmtNum } from "../util";
+import { ago, fmtDuration, fmtFull, fmtNum, serviceUp } from "../util";
+import { useMe } from "../App";
 
 function StateBadge({ c }: { c: Check }) {
   if (!c.enabled) return <span className="badge">paused</span>;
@@ -140,6 +141,7 @@ export default function Uptime() {
         A check is marked down after its configured number of consecutive failures; that files (or reopens) a GitHub issue and sends{" "}
         <code>check.down</code> to subscribed webhooks. When it passes again the issue is closed with the outage length.
       </p>
+      <WatchedServices />
       {editing && (
         <CheckForm
           initial={editing}
@@ -328,5 +330,104 @@ function CheckForm(props: { initial: Partial<Check>; onClose: () => void; onSave
         </label>
       </div>
     </Modal>
+  );
+}
+
+// Services watched for silence: one that sends nothing for DOWN_AFTER is
+// flagged down. Opt-in, because plenty of senders are quiet for minutes.
+function WatchedServices() {
+  const toast = useToast();
+  const me = useMe();
+  const svcs = useAsync(() => api.get<Service[]>("/api/services"), [], 15000);
+  const [adding, setAdding] = useState("");
+
+  const setWatch = async (name: string, watch: boolean) => {
+    try {
+      await api.patch(`/api/services/${encodeURIComponent(name)}`, { watch });
+      toast(watch ? `Watching ${name}` : `Stopped watching ${name}`);
+      setAdding("");
+      svcs.reload();
+    } catch (e) {
+      toast((e as Error).message, true);
+    }
+  };
+  const all = svcs.data ?? [];
+  const watched = all.filter((s) => s.watch);
+  const others = all.filter((s) => !s.watch);
+  const after = me.info.down_after;
+
+  return (
+    <>
+      <div className="page-head" style={{ marginTop: 24 }}>
+        <h2 style={{ margin: 0 }}>Watched services</h2>
+        <span className="sub">
+          A watched service that sends no logs, traces or metrics for {after} is flagged down: Sentinel files an issue and sends{" "}
+          <code>service.down</code>. Other services are never flagged for being quiet.
+        </span>
+        <div className="actions">
+          <select value={adding} onChange={(e) => setAdding(e.target.value)} disabled={others.length === 0} aria-label="Service to watch">
+            <option value="">{others.length ? "Choose a service…" : "All services are watched"}</option>
+            {others.map((s) => (
+              <option key={s.name} value={s.name}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+          <button className="primary" disabled={!adding} onClick={() => setWatch(adding, true)}>
+            + Watch
+          </button>
+        </div>
+      </div>
+      <ErrorNote error={svcs.error} />
+      <div className="card flush">
+        {!svcs.data ? (
+          <Loading />
+        ) : watched.length === 0 ? (
+          <Empty title="No watched services">Pick a service above to be alerted when it stops sending telemetry.</Empty>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Service</th>
+                <th>State</th>
+                <th>Last seen</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {watched.map((s) => {
+                const st = serviceUp(s);
+                return (
+                  <tr key={s.name}>
+                    <td style={{ fontWeight: 600 }}>{s.name}</td>
+                    <td>
+                      {st === "up" && (
+                        <span className="badge ok">
+                          <span className="dot ok" /> up
+                        </span>
+                      )}
+                      {st === "down" && (
+                        <span className="badge bad" title={`since ${fmtFull(s.down_since)}`}>
+                          <span className="dot bad" /> down {ago(s.down_since).replace(" ago", "")}
+                        </span>
+                      )}
+                      {st === "never" && <span className="badge">waiting for data</span>}
+                    </td>
+                    <td className="muted nowrap" title={fmtFull(s.last_seen)}>
+                      {ago(s.last_seen)}
+                    </td>
+                    <td style={{ textAlign: "right" }}>
+                      <button className="small" onClick={() => setWatch(s.name, false)}>
+                        Stop watching
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </>
   );
 }

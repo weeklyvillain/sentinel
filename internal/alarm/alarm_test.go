@@ -65,6 +65,8 @@ func TestServiceDownAndMetricAlarm(t *testing.T) {
 	defer st.Close()
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	st.TouchService(ctx, "api", "", now.Add(-time.Hour))
+	watch := true
+	st.SetServiceFlags(ctx, "api", store.ServiceFlags{Watch: &watch})
 	st.MarkServiceDown(ctx, "api", now.Add(-time.Hour))
 	r, err := Evaluate(ctx, st, store.Alarm{Name: "down", Kind: store.AlarmServiceDown}, now)
 	if err != nil || !r.Firing || r.Value != 1 {

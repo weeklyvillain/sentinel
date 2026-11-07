@@ -264,9 +264,19 @@ func TestClosedNotPlannedIsIgnored(t *testing.T) {
 	}
 }
 
+func (h *harness) setFlags(service string, issues, watch *bool) {
+	h.t.Helper()
+	if err := h.st.SetServiceFlags(h.ctx, service, store.ServiceFlags{Issues: issues, Watch: watch}); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+func ptr(b bool) *bool { return &b }
+
 func TestDownThenRecoveryClosesAndLaterReopens(t *testing.T) {
 	h := newHarness(t, Config{SettleWindow: time.Minute, MinEvents: 5, DownAfter: 5 * time.Minute})
 	h.r.Processor.Heartbeat(h.ctx, "payments", "prod", h.now)
+	h.setFlags("payments", nil, ptr(true))
 
 	// Within the startup grace period nothing is flagged even if silent.
 	h.advance(4 * time.Minute)
@@ -314,6 +324,65 @@ func TestDownThenRecoveryClosesAndLaterReopens(t *testing.T) {
 	h.r.Tick(h.ctx)
 	if iss.State != "closed" || h.gh.closes != 2 {
 		t.Fatalf("second recovery should close again: state=%s closes=%d", iss.State, h.gh.closes)
+	}
+}
+
+// Going quiet only counts as down for services watched from the Uptime page.
+func TestUnwatchedServiceIsNeverDown(t *testing.T) {
+	h := newHarness(t, Config{DownAfter: 5 * time.Minute})
+	h.r.Processor.Heartbeat(h.ctx, "batch-job", "prod", h.now)
+	h.advance(time.Hour)
+	h.r.Tick(h.ctx)
+	if h.gh.created != 0 {
+		t.Fatal("an unwatched service was flagged down")
+	}
+	if svcs, _ := h.st.ListServices(h.ctx); svcs[0].Down {
+		t.Fatal("unwatched service marked down")
+	}
+
+	// Watching it starts the clock from the last time it was seen.
+	h.setFlags("batch-job", nil, ptr(true))
+	h.r.Tick(h.ctx)
+	if h.gh.created != 1 {
+		t.Fatalf("watched silent service should be down, created=%d", h.gh.created)
+	}
+	// Unwatching clears the down state without a recovery comment.
+	h.setFlags("batch-job", nil, ptr(false))
+	h.r.Tick(h.ctx)
+	if svcs, _ := h.st.ListServices(h.ctx); svcs[0].Down || !svcs[0].RecoveredAt.IsZero() {
+		t.Fatalf("unwatched service still down: %+v", svcs[0])
+	}
+	if len(h.gh.issues[1].comments) != 0 {
+		t.Fatal("unwatching should not post a recovery comment")
+	}
+}
+
+// With issue creation off, errors are still grouped but nothing reaches GitHub
+// until it is switched back on.
+func TestIssuesOffForService(t *testing.T) {
+	h := newHarness(t, Config{SettleWindow: 0, MinEvents: 1, UpdateInterval: time.Minute, DownAfter: 0})
+	h.r.Processor.Heartbeat(h.ctx, "checkout", "prod", h.now)
+	h.setFlags("checkout", ptr(false), nil)
+	h.emit(5, "boom %d")
+	h.r.Tick(h.ctx)
+	g := h.group()
+	if h.gh.created != 0 || g.Status != store.StatusPending || !strings.Contains(g.BlockReason, "turned off") {
+		t.Fatalf("muted service filed an issue: created=%d %+v", h.gh.created, g)
+	}
+
+	h.setFlags("checkout", ptr(true), nil)
+	h.r.Tick(h.ctx)
+	if h.gh.created != 1 {
+		t.Fatalf("switching issues back on should file it, created=%d", h.gh.created)
+	}
+
+	// Muting again stops updates to the open issue too.
+	h.setFlags("checkout", ptr(false), nil)
+	h.emit(5, "boom %d")
+	h.advance(time.Hour)
+	h.r.Tick(h.ctx)
+	if n := len(h.gh.issues[1].comments); n != 0 {
+		t.Fatalf("muted service got %d update comment(s)", n)
 	}
 }
 
