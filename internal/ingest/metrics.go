@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -95,7 +96,11 @@ func numValue(dp *metricspb.NumberDataPoint) float64 {
 	return 0
 }
 
-func (d *deltaTracker) convert(service string, m *metricspb.Metric, now time.Time) []store.MetricPoint {
+// convert turns one metric into points. resource identifies the sending
+// process (its resource attributes): several instances of a service report
+// the same series, each with its own running total, and their cumulative
+// values must never be subtracted from each other.
+func (d *deltaTracker) convert(service, resource string, m *metricspb.Metric, now time.Time) []store.MetricPoint {
 	base := store.MetricPoint{Service: service, Name: m.GetName(), Unit: m.GetUnit(), Desc: m.GetDescription()}
 	var out []store.MetricPoint
 	add := func(t uint64, attrs []*commonpb.KeyValue, kind string, v float64) {
@@ -103,8 +108,10 @@ func (d *deltaTracker) convert(service string, m *metricspb.Metric, now time.Tim
 		p.Time, p.Kind, p.Attrs, p.Value = nanoTime(t, now), kind, attrKey(attrs), v
 		out = append(out, p)
 	}
-	key := func(attrs []*commonpb.KeyValue) string {
-		return service + "\x00" + m.GetName() + "\x00" + attrKey(attrs)
+	// The start time separates instances whose resources look the same (a
+	// counter's start time is its process start).
+	key := func(attrs []*commonpb.KeyValue, start uint64) string {
+		return service + "\x00" + resource + "\x00" + m.GetName() + "\x00" + attrKey(attrs) + "\x00" + strconv.FormatUint(start, 10)
 	}
 
 	switch data := m.GetData().(type) {
@@ -122,7 +129,7 @@ func (d *deltaTracker) convert(service string, m *metricspb.Metric, now time.Tim
 				// Up/down counters are levels; chart them like gauges.
 				add(dp.GetTimeUnixNano(), dp.GetAttributes(), "gauge", v)
 			case cumulative:
-				if dv, _, _, ok := d.step(key(dp.GetAttributes()), dp.GetStartTimeUnixNano(), v, 0, 0, now); ok {
+				if dv, _, _, ok := d.step(key(dp.GetAttributes(), dp.GetStartTimeUnixNano()), dp.GetStartTimeUnixNano(), v, 0, 0, now); ok {
 					add(dp.GetTimeUnixNano(), dp.GetAttributes(), "counter", dv)
 				}
 			default:
@@ -136,7 +143,7 @@ func (d *deltaTracker) convert(service string, m *metricspb.Metric, now time.Tim
 			sum, count := dp.GetSum(), dp.GetCount()
 			if cumulative {
 				var ok bool
-				_, sum, count, ok = d.step(key(dp.GetAttributes()), dp.GetStartTimeUnixNano(), 0, sum, count, now)
+				_, sum, count, ok = d.step(key(dp.GetAttributes(), dp.GetStartTimeUnixNano()), dp.GetStartTimeUnixNano(), 0, sum, count, now)
 				if !ok {
 					continue
 				}
@@ -152,7 +159,7 @@ func (d *deltaTracker) convert(service string, m *metricspb.Metric, now time.Tim
 			sum, count := dp.GetSum(), dp.GetCount()
 			if cumulative {
 				var ok bool
-				_, sum, count, ok = d.step(key(dp.GetAttributes()), dp.GetStartTimeUnixNano(), 0, sum, count, now)
+				_, sum, count, ok = d.step(key(dp.GetAttributes(), dp.GetStartTimeUnixNano()), dp.GetStartTimeUnixNano(), 0, sum, count, now)
 				if !ok {
 					continue
 				}
@@ -163,7 +170,7 @@ func (d *deltaTracker) convert(service string, m *metricspb.Metric, now time.Tim
 		}
 	case *metricspb.Metric_Summary:
 		for _, dp := range data.Summary.GetDataPoints() {
-			_, sum, count, ok := d.step(key(dp.GetAttributes()), dp.GetStartTimeUnixNano(), 0, dp.GetSum(), dp.GetCount(), now)
+			_, sum, count, ok := d.step(key(dp.GetAttributes(), dp.GetStartTimeUnixNano()), dp.GetStartTimeUnixNano(), 0, dp.GetSum(), dp.GetCount(), now)
 			if ok && count > 0 {
 				add(dp.GetTimeUnixNano(), dp.GetAttributes(), "summary", sum/float64(count))
 			}
