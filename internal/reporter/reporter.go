@@ -117,6 +117,11 @@ func (r *Reporter) Tick(ctx context.Context) {
 }
 
 func (r *Reporter) detectDown(ctx context.Context) error {
+	// Before the early returns: a service that is not watched (any more) must
+	// not stay down, also when detection is off or still in its grace period.
+	if err := r.Store.ClearUnwatchedDown(ctx); err != nil {
+		return err
+	}
 	if r.Cfg.DownAfter <= 0 {
 		return nil
 	}
@@ -130,7 +135,10 @@ func (r *Reporter) detectDown(ctx context.Context) error {
 		return err
 	}
 	for _, sv := range svcs {
-		if sv.Down || now.Sub(sv.LastSeen) < r.Cfg.DownAfter {
+		// Only services added on the Uptime page are watched for silence:
+		// plenty of senders (batch jobs, quiet agents) go minutes without a
+		// line and are not down.
+		if !sv.Watch || sv.Down || now.Sub(sv.LastSeen) < r.Cfg.DownAfter {
 			continue
 		}
 		ok, err := r.Store.MarkServiceDown(ctx, sv.Name, sv.LastSeen)
@@ -219,7 +227,17 @@ func (r *Reporter) createIssues(ctx context.Context) error {
 	for i, j := 0, len(groups)-1; i < j; i, j = i+1, j-1 {
 		groups[i], groups[j] = groups[j], groups[i]
 	}
+	off, err := r.issuesOff(ctx)
+	if err != nil {
+		return err
+	}
 	for _, g := range groups {
+		if off[g.Service] {
+			if err := r.Store.SetBlockReason(ctx, g.ID, "issue creation is turned off for service "+g.Service); err != nil {
+				return err
+			}
+			continue
+		}
 		if g.Kind != event.KindDown {
 			if now.Sub(g.FirstSeen) < r.Cfg.SettleWindow || g.Count < r.Cfg.MinEvents {
 				continue
@@ -310,9 +328,13 @@ func (r *Reporter) updateOpen(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	off, err := r.issuesOff(ctx)
+	if err != nil {
+		return err
+	}
 	now := r.now()
 	for _, g := range groups {
-		if g.IssueNumber == 0 || g.NewSinceReport() <= 0 {
+		if g.IssueNumber == 0 || g.NewSinceReport() <= 0 || off[g.Service] {
 			continue
 		}
 		due := now.Sub(g.LastReportedAt) >= r.Cfg.UpdateInterval
@@ -392,9 +414,13 @@ func (r *Reporter) reopenResolved(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	off, err := r.issuesOff(ctx)
+	if err != nil {
+		return err
+	}
 	now := r.now()
 	for _, g := range groups {
-		if g.IssueNumber == 0 || g.NewSinceReport() <= 0 {
+		if g.IssueNumber == 0 || g.NewSinceReport() <= 0 || off[g.Service] {
 			continue
 		}
 		gh, _, err := r.clientFor(ctx, g)
@@ -422,6 +448,23 @@ func (r *Reporter) reopenResolved(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// issuesOff returns the services whose issue creation is switched off. For
+// those Sentinel still records and groups everything, but files, updates and
+// reopens nothing on GitHub.
+func (r *Reporter) issuesOff(ctx context.Context) (map[string]bool, error) {
+	svcs, err := r.Store.ListServices(ctx)
+	if err != nil {
+		return nil, err
+	}
+	off := map[string]bool{}
+	for _, sv := range svcs {
+		if !sv.Issues {
+			off[sv.Name] = true
+		}
+	}
+	return off, nil
 }
 
 func inputFor(g store.Group, samples []store.Sample) ai.Input {

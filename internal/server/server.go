@@ -78,6 +78,7 @@ func (s *Server) Handler() http.Handler {
 	api("POST /api/services", s.handleSaveService)
 	api("PUT /api/services/{name}", s.handleSaveService)
 	api("DELETE /api/services/{name}", s.handleDeleteService)
+	api("PATCH /api/services/{name}", s.handleServiceFlags)
 
 	api("GET /api/groups", s.handleListGroups)
 	api("GET /api/groups/{id}", s.handleGetGroup)

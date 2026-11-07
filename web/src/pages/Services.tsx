@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api, GitHubStatus, Service } from "../api";
 import { useMe } from "../App";
-import { Empty, ErrorNote, Loading, Modal, useAsync, useToast } from "../components/ui";
+import { Empty, ErrorNote, Loading, Modal, Switch, useAsync, useToast } from "../components/ui";
 import { ago, fmtFull, serviceUp } from "../util";
 
 export default function Services() {
@@ -17,6 +17,15 @@ export default function Services() {
     try {
       await api.del(`/api/services/${encodeURIComponent(s.name)}`);
       toast(`Removed ${s.name}`);
+      svcs.reload();
+    } catch (e) {
+      toast((e as Error).message, true);
+    }
+  };
+  const setIssues = async (s: Service, issues: boolean) => {
+    try {
+      await api.patch(`/api/services/${encodeURIComponent(s.name)}`, { issues });
+      toast(issues ? `Issues on for ${s.name}` : `Issues off for ${s.name}: errors are still grouped, nothing is filed`);
       svcs.reload();
     } catch (e) {
       toast((e as Error).message, true);
@@ -47,6 +56,7 @@ export default function Services() {
           <table>
             <thead>
               <tr>
+                <th style={{ width: 60 }} title="File GitHub issues for this service">Issues</th>
                 <th>Service</th>
                 <th>Status</th>
                 <th>Last seen</th>
@@ -60,7 +70,10 @@ export default function Services() {
               {svcs.data.map((s) => {
                 const st = serviceUp(s);
                 return (
-                  <tr key={s.name}>
+                  <tr key={s.name} style={s.issues ? undefined : { opacity: 0.75 }}>
+                    <td>
+                      <Switch checked={s.issues} onChange={(v) => setIssues(s, v)} label={`Issues for ${s.name}`} />
+                    </td>
                     <td>
                       <div style={{ fontWeight: 600 }}>{s.name}</div>
                       <div className="small faint">
@@ -69,7 +82,12 @@ export default function Services() {
                       </div>
                     </td>
                     <td>
-                      {st === "up" && <span className="badge ok"><span className="dot ok" /> up</span>}
+                      {st === "up" && !s.watch && (
+                        <span className="badge" title="Not watched for silence. Add it under Uptime → Watched services to be alerted when it stops sending.">
+                          sending
+                        </span>
+                      )}
+                      {st === "up" && s.watch && <span className="badge ok"><span className="dot ok" /> up</span>}
                       {st === "down" && <span className="badge bad" title={`since ${fmtFull(s.down_since)}`}><span className="dot bad" /> down</span>}
                       {st === "never" && <span className="badge">waiting for data</span>}
                     </td>

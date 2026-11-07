@@ -242,6 +242,26 @@ func TestEmptyInstallReturnsNoNullLists(t *testing.T) {
 	}
 }
 
+func TestServiceFlagsAPI(t *testing.T) {
+	h := newHarness(t, AuthConfig{Mode: "none"}, "x")
+	h.st.TouchService(context.Background(), "api", "prod", time.Now())
+	if resp, body := h.do("PATCH", "/api/services/api", `{"issues":false}`, false); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("PATCH without CSRF header: %d %s", resp.StatusCode, body)
+	}
+	resp, body := h.do("PATCH", "/api/services/api", `{"issues":false,"watch":true}`, true)
+	if resp.StatusCode != 200 || !strings.Contains(body, `"issues":false`) || !strings.Contains(body, `"watch":true`) {
+		t.Fatalf("PATCH flags: %d %s", resp.StatusCode, body)
+	}
+	// Only the given flag changes.
+	_, body = h.do("PATCH", "/api/services/api", `{"issues":true}`, true)
+	if !strings.Contains(body, `"issues":true`) || !strings.Contains(body, `"watch":true`) {
+		t.Fatalf("partial PATCH: %s", body)
+	}
+	if resp, _ := h.do("PATCH", "/api/services/nope", `{"watch":true}`, true); resp.StatusCode != 404 {
+		t.Fatalf("unknown service: %d", resp.StatusCode)
+	}
+}
+
 func TestWebhookSecretMaskingAndLogsAPI(t *testing.T) {
 	h := newHarness(t, AuthConfig{Mode: "none"}, "x")
 	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))

@@ -47,8 +47,10 @@ app ──OTLP──▶ Collector ──otlphttp──▶ Sentinel :4318 ──�
      is ignored and Sentinel stays quiet.
    - At most `MAX_ISSUES_PER_HOUR` new issues per rolling hour; the rest stay
      pending until there is room.
-5. **Service down** – a service that was seen and then sends nothing for
-   `DOWN_AFTER` gets a synthetic `down` event that goes through the same
+5. **Service down** – a *watched* service (added under **Uptime → Watched
+   services**) that was seen and then sends nothing for `DOWN_AFTER` gets a
+   synthetic `down` event. Services that are not watched are never flagged for
+   being quiet. The `down` event that goes through the same
    grouping (down groups skip the settle window and `MIN_EVENTS`). After a
    Sentinel restart there is a grace period of `DOWN_AFTER` before anything can
    be flagged. When the service sends again, Sentinel comments the outage
@@ -73,6 +75,9 @@ from the OTLP port):
   with avg/sum/max/min/count and per-attribute split.
 - **Services** – discovered automatically from `service.name`; add a service
   ahead of time, choose which repository its issues go to and extra labels.
+  The **Issues** switch turns issue creation off per service: its errors are
+  still stored and grouped, but nothing is filed, updated or reopened on
+  GitHub until it is switched back on.
 - **Alarms** – rules evaluated every 15s: *log count* (matching text, level,
   service, window), *metric threshold* (aggregate over a window) and *service
   down*. A preview shows the current value; state changes are kept as history.
@@ -238,8 +243,9 @@ It:
 - keeps a **disk-backed retry queue**, so data produced while Sentinel or the
   network is unreachable is delivered when it comes back,
 - sends **host metrics** (CPU, memory, disk, network, load) as a service named
-  `HOST_SERVICE_NAME`. Sentinel then shows the server's own charts and flags
-  the whole machine as down when it goes quiet.
+  `HOST_SERVICE_NAME`. Sentinel then shows the server's own charts, and, once
+  you watch that service on the Uptime page, flags the whole machine as down
+  when it goes quiet.
 
 ### 3. Uptime checks
 
@@ -285,7 +291,7 @@ All configuration is via environment variables. Durations accept Go syntax
 | `MIN_EVENTS` | `1` | Minimum events before a group is filed |
 | `UPDATE_INTERVAL` | `30m` | At most one update comment per issue per interval |
 | `MAX_ISSUES_PER_HOUR` | `10` | Cap on new issues per rolling hour (`-1` = unlimited) |
-| `DOWN_AFTER` | `5m` | Silence before a service counts as down; `0` disables |
+| `DOWN_AFTER` | `5m` | Silence before a watched service counts as down; `0` disables |
 | `GITHUB_APP_ID` | – | GitHub App id (enables app mode) |
 | `GITHUB_APP_PRIVATE_KEY_FILE` / `GITHUB_APP_PRIVATE_KEY` | – | App private key (PEM file, or PEM text with `\n`) |
 | `GITHUB_APP_CLIENT_ID` / `GITHUB_APP_CLIENT_SECRET` | – | App OAuth credentials for dashboard sign-in |
