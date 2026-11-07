@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go driver
@@ -44,6 +45,8 @@ type Group struct {
 	LastReportedAt    time.Time  `json:"last_reported_at,omitzero"`
 	LastCheckedAt     time.Time  `json:"last_checked_at,omitzero"`
 	IssueCreatedAt    time.Time  `json:"issue_created_at,omitzero"`
+	Repo              string     `json:"repo,omitempty"`
+	BlockReason       string     `json:"block_reason,omitempty"`
 }
 
 // NewSinceReport is the number of events since the last issue/comment.
@@ -63,11 +66,16 @@ type Service struct {
 	Down        bool      `json:"down"`
 	DownSince   time.Time `json:"down_since,omitzero"`
 	RecoveredAt time.Time `json:"recovered_at,omitzero"`
+	Repo        string    `json:"repo,omitempty"`
+	Labels      []string  `json:"labels,omitempty"`
+	Managed     bool      `json:"managed"`
+	Description string    `json:"description,omitempty"`
 }
 
 // Store wraps the SQLite database.
 type Store struct {
-	db *sql.DB
+	db  *sql.DB // single writer connection
+	rdb *sql.DB // read pool (same as db for :memory:)
 }
 
 const schema = `
@@ -124,11 +132,32 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
-	return &Store{db: db}, nil
+	s := &Store{db: db, rdb: db}
+	if err := s.migrate(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	if path != ":memory:" {
+		// WAL lets readers run alongside the single writer; dashboard queries
+		// (log search, charts) use this pool so they never block ingest.
+		rdb, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)&_pragma=query_only(1)")
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+		rdb.SetMaxOpenConns(4)
+		s.rdb = rdb
+	}
+	return s, nil
 }
 
 // Close closes the database.
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	if s.rdb != s.db {
+		s.rdb.Close()
+	}
+	return s.db.Close()
+}
 
 func ms(t time.Time) int64 {
 	if t.IsZero() {
@@ -194,7 +223,7 @@ func (s *Store) RecordEvent(ctx context.Context, fp string, e event.Event) (Grou
 }
 
 const groupCols = `SELECT id, fingerprint, service, env, kind, title, first_seen, last_seen, count,
-	count_at_last_report, status, issue_number, issue_url, last_reported_at, last_checked_at, issue_created_at FROM groups`
+	count_at_last_report, status, issue_number, issue_url, last_reported_at, last_checked_at, issue_created_at, repo, block_reason FROM groups`
 
 type scanner interface{ Scan(...any) error }
 
@@ -203,7 +232,7 @@ func scanGroup(r scanner) (Group, error) {
 	var kind string
 	var first, last, rep, chk, created int64
 	err := r.Scan(&g.ID, &g.Fingerprint, &g.Service, &g.Env, &kind, &g.Title, &first, &last, &g.Count,
-		&g.CountAtLastReport, &g.Status, &g.IssueNumber, &g.IssueURL, &rep, &chk, &created)
+		&g.CountAtLastReport, &g.Status, &g.IssueNumber, &g.IssueURL, &rep, &chk, &created, &g.Repo, &g.BlockReason)
 	if err != nil {
 		return g, err
 	}
@@ -282,14 +311,14 @@ func (s *Store) Samples(ctx context.Context, groupID int64) ([]Sample, error) {
 // MarkIssueCreated links a group to a newly created (or adopted) issue.
 // reportedCount is the group count the report was based on. created=false
 // (an adopted existing issue) does not count toward the hourly cap.
-func (s *Store) MarkIssueCreated(ctx context.Context, id int64, number int, url string, reportedCount int64, now time.Time, created bool) error {
+func (s *Store) MarkIssueCreated(ctx context.Context, id int64, repo string, number int, url string, reportedCount int64, now time.Time, created bool) error {
 	createdAt := int64(0)
 	if created {
 		createdAt = ms(now)
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE groups SET status = 'open', issue_number = ?, issue_url = ?,
+	_, err := s.db.ExecContext(ctx, `UPDATE groups SET status = 'open', repo = ?, issue_number = ?, issue_url = ?, block_reason = '',
 		count_at_last_report = ?, last_reported_at = ?, last_checked_at = ?, issue_created_at = ? WHERE id = ?`,
-		number, url, reportedCount, ms(now), ms(now), createdAt, id)
+		repo, number, url, reportedCount, ms(now), ms(now), createdAt, id)
 	return err
 }
 
@@ -340,7 +369,7 @@ func (s *Store) TouchService(ctx context.Context, name, env string, now time.Tim
 
 // ListServices returns all known services.
 func (s *Store) ListServices(ctx context.Context) ([]Service, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT name, env, last_seen, down, down_since, recovered_at FROM services ORDER BY name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT name, env, last_seen, down, down_since, recovered_at, repo, labels, managed, description FROM services ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -349,10 +378,13 @@ func (s *Store) ListServices(ctx context.Context) ([]Service, error) {
 	for rows.Next() {
 		var sv Service
 		var last, since, rec int64
-		var down int
-		if err := rows.Scan(&sv.Name, &sv.Env, &last, &down, &since, &rec); err != nil {
+		var down, managed int
+		var labels string
+		if err := rows.Scan(&sv.Name, &sv.Env, &last, &down, &since, &rec, &sv.Repo, &labels, &managed, &sv.Description); err != nil {
 			return nil, err
 		}
+		sv.Labels = splitLabels(labels)
+		sv.Managed = managed == 1
 		sv.LastSeen, sv.DownSince, sv.RecoveredAt = fromMs(last), fromMs(since), fromMs(rec)
 		sv.Down = down == 1
 		out = append(out, sv)
@@ -365,7 +397,7 @@ func (s *Store) ListServices(ctx context.Context) ([]Service, error) {
 // seen after since.
 func (s *Store) MarkServiceDown(ctx context.Context, name string, since time.Time) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `UPDATE services SET down = 1, down_since = ?, recovered_at = 0
-		WHERE name = ? AND down = 0 AND last_seen <= ?`, ms(since), name, ms(since))
+		WHERE name = ? AND down = 0 AND last_seen > 0 AND last_seen <= ?`, ms(since), name, ms(since))
 	if err != nil {
 		return false, err
 	}
@@ -377,4 +409,77 @@ func (s *Store) MarkServiceDown(ctx context.Context, name string, since time.Tim
 func (s *Store) ClearRecovery(ctx context.Context, name string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE services SET recovered_at = 0, down_since = 0 WHERE name = ? AND down = 0`, name)
 	return err
+}
+
+// GetGroupByID returns a group by id.
+func (s *Store) GetGroupByID(ctx context.Context, id int64) (Group, error) {
+	g, err := scanGroup(s.rdb.QueryRowContext(ctx, groupCols+` WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return g, ErrNotFound
+	}
+	return g, err
+}
+
+// SetBlockReason records why a pending group cannot be filed (shown in the UI).
+func (s *Store) SetBlockReason(ctx context.Context, id int64, reason string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE groups SET block_reason = ? WHERE id = ? AND block_reason <> ?`, reason, id, reason)
+	return err
+}
+
+// GetService returns one service.
+func (s *Store) GetService(ctx context.Context, name string) (Service, error) {
+	all, err := s.ListServices(ctx)
+	if err != nil {
+		return Service{}, err
+	}
+	for _, sv := range all {
+		if sv.Name == name {
+			return sv, nil
+		}
+	}
+	return Service{}, ErrNotFound
+}
+
+// ServiceConfig is the user-editable part of a service.
+type ServiceConfig struct {
+	Name        string   `json:"name"`
+	Repo        string   `json:"repo"`
+	Labels      []string `json:"labels"`
+	Description string   `json:"description"`
+}
+
+// UpsertServiceConfig adds (or edits) a service from the dashboard. A service
+// added before it ever sent telemetry has last_seen = 0 and is never flagged down.
+func (s *Store) UpsertServiceConfig(ctx context.Context, c ServiceConfig) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO services (name, last_seen, repo, labels, managed, description) VALUES (?, 0, ?, ?, 1, ?)
+		ON CONFLICT(name) DO UPDATE SET repo = excluded.repo, labels = excluded.labels, managed = 1, description = excluded.description`,
+		c.Name, c.Repo, joinLabels(c.Labels), c.Description)
+	return err
+}
+
+// DeleteService forgets a service. If it sends telemetry again it reappears as discovered.
+func (s *Store) DeleteService(ctx context.Context, name string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM services WHERE name = ?`, name)
+	return err
+}
+
+func splitLabels(s string) []string {
+	var out []string
+	for _, l := range strings.Split(s, ",") {
+		if l = strings.TrimSpace(l); l != "" {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+func joinLabels(ls []string) string {
+	var out []string
+	for _, l := range ls {
+		if l = strings.TrimSpace(l); l != "" && !strings.Contains(l, ",") {
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, ",")
 }

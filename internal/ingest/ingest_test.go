@@ -6,6 +6,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -19,12 +20,15 @@ import (
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 
 	"github.com/weeklyvillain/sentinel/internal/event"
+	"github.com/weeklyvillain/sentinel/internal/store"
 )
 
 type sink struct {
-	mu     sync.Mutex
-	events []event.Event
-	beats  []string
+	mu      sync.Mutex
+	events  []event.Event
+	logs    []store.LogRecord
+	metrics []store.MetricPoint
+	beats   []string
 }
 
 func (s *sink) Heartbeat(_ context.Context, svc, env string, _ time.Time) {
@@ -32,10 +36,20 @@ func (s *sink) Heartbeat(_ context.Context, svc, env string, _ time.Time) {
 	defer s.mu.Unlock()
 	s.beats = append(s.beats, svc+"/"+env)
 }
-func (s *sink) Event(_ context.Context, e event.Event) {
+func (s *sink) Records(_ context.Context, recs []Record) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.events = append(s.events, e)
+	for _, r := range recs {
+		s.logs = append(s.logs, r.Log)
+		if r.Error != nil {
+			s.events = append(s.events, *r.Error)
+		}
+	}
+}
+func (s *sink) Metrics(_ context.Context, pts []store.MetricPoint) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.metrics = append(s.metrics, pts...)
 }
 
 func server(t *testing.T) (*httptest.Server, *sink) {
@@ -83,6 +97,9 @@ func TestLogsJSON(t *testing.T) {
 	}
 	if len(s.beats) != 1 || s.beats[0] != "checkout/prod" {
 		t.Errorf("heartbeats: %v", s.beats)
+	}
+	if len(s.logs) != 4 || s.logs[1].Severity != 9 || s.logs[2].Severity != 21 || s.logs[0].Severity != 17 {
+		t.Errorf("want all 4 logs stored with severities 17/9/21/17, got %+v", s.logs)
 	}
 }
 
@@ -150,3 +167,39 @@ func TestMetricsHeartbeatAndBadInput(t *testing.T) {
 		t.Errorf("protobuf logs: %d %+v", resp.StatusCode, s.events)
 	}
 }
+
+func TestMetricsConversion(t *testing.T) {
+	srv, s := server(t)
+	post := func(cum1, cum2 int) {
+		body := `{"resourceMetrics":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"api"}}]},
+		 "scopeMetrics":[{"metrics":[
+		  {"name":"cpu","unit":"1","gauge":{"dataPoints":[{"asDouble":0.5,"timeUnixNano":"1767225600000000000"}]}},
+		  {"name":"requests","sum":{"isMonotonic":true,"aggregationTemporality":2,"dataPoints":[
+		    {"asInt":"` + itoa(cum1) + `","startTimeUnixNano":"1","timeUnixNano":"1767225600000000000","attributes":[{"key":"route","value":{"stringValue":"/a"}}]}]}},
+		  {"name":"latency","histogram":{"aggregationTemporality":1,"dataPoints":[{"count":"4","sum":2.0,"timeUnixNano":"1767225600000000000"}]}}
+		 ]}]}]}`
+		_ = cum2
+		resp, err := http.Post(srv.URL+"/v1/metrics", "application/json", strings.NewReader(body))
+		if err != nil || resp.StatusCode != 200 {
+			t.Fatalf("post: %v %v", err, resp)
+		}
+	}
+	post(100, 0)
+	post(130, 0)
+	byName := map[string][]store.MetricPoint{}
+	for _, p := range s.metrics {
+		byName[p.Name] = append(byName[p.Name], p)
+	}
+	if len(byName["cpu"]) != 2 || byName["cpu"][0].Value != 0.5 || byName["cpu"][0].Kind != "gauge" {
+		t.Errorf("gauge: %+v", byName["cpu"])
+	}
+	// First cumulative point is the baseline; the second is the delta.
+	if len(byName["requests"]) != 1 || byName["requests"][0].Value != 30 || byName["requests"][0].Attrs != "route=/a" {
+		t.Errorf("counter: %+v", byName["requests"])
+	}
+	if len(byName["latency"]) != 2 || byName["latency"][0].Value != 0.5 {
+		t.Errorf("histogram mean: %+v", byName["latency"])
+	}
+}
+
+func itoa(n int) string { return strconv.Itoa(n) }

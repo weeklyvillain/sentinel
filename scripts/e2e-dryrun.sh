@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # End-to-end check: run sentinel in DRY_RUN, POST a burst of OTLP/JSON error
 # logs (with varying ids), and assert they become exactly one group and one
-# (dry-run) issue.
+# (dry-run) issue, and that every line is stored, searchable and redacted.
 #
-#   ./scripts/e2e-dryrun.sh            # uses port 4318
-#   PORT=14318 ./scripts/e2e-dryrun.sh
+#   ./scripts/e2e-dryrun.sh                         # OTLP on 4318, dashboard API on 18089
+#   PORT=14318 HTTP_PORT=18090 ./scripts/e2e-dryrun.sh
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 PORT="${PORT:-4318}"
+HTTP_PORT="${HTTP_PORT:-18089}"
 BURST="${BURST:-50}"
 WORK="$(mktemp -d)"
 BIN="$WORK/sentinel"
@@ -20,8 +21,8 @@ go build -o "$BIN" ./cmd/sentinel
 cleanup() { [[ -n "${PID:-}" ]] && kill "$PID" 2>/dev/null || true; }
 trap cleanup EXIT
 
-DRY_RUN=true AI_PROVIDER=none \
-SENTINEL_OTLP_ADDR="127.0.0.1:$PORT" SENTINEL_DB="$WORK/sentinel.db" \
+DRY_RUN=true AI_PROVIDER=none DASHBOARD_AUTH=none \
+SENTINEL_OTLP_ADDR="127.0.0.1:$PORT" SENTINEL_HTTP_ADDR="127.0.0.1:$HTTP_PORT" SENTINEL_DB="$WORK/sentinel.db" \
 SETTLE_WINDOW=2s TICK_INTERVAL=1s MIN_EVENTS=3 DOWN_AFTER=0 \
   "$BIN" >"$LOG" 2>&1 &
 PID=$!
@@ -52,21 +53,25 @@ done
 echo "waiting for the settle window + a reporter tick ..."
 sleep 4
 
-GROUPS_JSON=$(curl -fsS "http://127.0.0.1:$PORT/groups")
-echo "$GROUPS_JSON" | head -40
+API="http://127.0.0.1:$HTTP_PORT/api"
+GROUPS_JSON=$(curl -fsS "$API/groups")
+echo "$GROUPS_JSON" | head -c 1200; echo
 
-ngroups=$(echo "$GROUPS_JSON" | grep -c '"fingerprint"' || true)
-count=$(echo "$GROUPS_JSON" | grep -o '"count": [0-9]*' | head -1 | grep -o '[0-9]*')
+ngroups=$(echo "$GROUPS_JSON" | grep -o '"fingerprint"' | wc -l | tr -d ' ')
+count=$(echo "$GROUPS_JSON" | grep -o '"count":[0-9]*' | head -1 | grep -o '[0-9]*')
 nissues=$(grep -c 'DRY_RUN create issue' "$LOG" || true)
+# Every log line is also stored and searchable.
+searchable=$(curl -fsS "$API/logs?q=charge%20order&range=1h&limit=1" | grep -o '"total":[0-9]*' | grep -o '[0-9]*')
 
 echo
-echo "groups=$ngroups count=$count dry-run issues=$nissues"
+echo "groups=$ngroups count=$count dry-run issues=$nissues searchable_logs=$searchable"
 if grep -q 'sk_live_' "$LOG"; then echo "FAIL: secret leaked into output"; exit 1; fi
-if [[ "$ngroups" == 1 && "$count" == "$BURST" && "$nissues" == 1 ]]; then
+if curl -fsS "$API/logs?range=1h&limit=1000" | grep -q 'sk_live_'; then echo "FAIL: secret stored in logs"; exit 1; fi
+if [[ "$ngroups" == 1 && "$count" == "$BURST" && "$nissues" == 1 && "$searchable" == "$BURST" ]]; then
   echo "--- dry-run issue (from sentinel log) ---"
   grep 'DRY_RUN create issue' "$LOG" | head -1 | cut -c1-1500
   echo
-  echo "PASS: $BURST events -> 1 group -> 1 issue"
+  echo "PASS: $BURST events -> 1 group -> 1 issue; $BURST searchable, redacted log lines"
 else
   echo "FAIL"; cat "$LOG"; exit 1
 fi

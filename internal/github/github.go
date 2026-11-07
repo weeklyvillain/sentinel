@@ -47,7 +47,13 @@ type Client struct {
 	Labels  []string
 	BaseURL string // default https://api.github.com
 	HTTP    *http.Client
+	// TokenSource, if set, supplies the token per request (GitHub App
+	// installation tokens); otherwise Token is used.
+	TokenSource func(ctx context.Context) (string, error)
 }
+
+// FullName returns "owner/name".
+func (c *Client) FullName() string { return c.Owner + "/" + c.Repo }
 
 // New creates a client for repo "owner/name".
 func New(token, repo string, labels []string) (*Client, error) {
@@ -75,8 +81,16 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("User-Agent", "sentinel")
-	if c.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.Token)
+	token := c.Token
+	if c.TokenSource != nil {
+		t, err := c.TokenSource(ctx)
+		if err != nil {
+			return fmt.Errorf("github token: %w", err)
+		}
+		token = t
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")

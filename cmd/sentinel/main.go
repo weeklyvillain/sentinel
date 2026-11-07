@@ -1,10 +1,10 @@
-// Command sentinel receives OTLP telemetry, groups errors and outages, and
-// files deduplicated GitHub issues.
+// Command sentinel receives OTLP telemetry, groups errors and outages, files
+// deduplicated GitHub issues, and serves a dashboard for logs, metrics,
+// alarms and webhooks.
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -14,11 +14,15 @@ import (
 	"time"
 
 	"github.com/weeklyvillain/sentinel/internal/ai"
+	"github.com/weeklyvillain/sentinel/internal/alarm"
 	"github.com/weeklyvillain/sentinel/internal/config"
 	"github.com/weeklyvillain/sentinel/internal/github"
 	"github.com/weeklyvillain/sentinel/internal/ingest"
+	"github.com/weeklyvillain/sentinel/internal/notify"
 	"github.com/weeklyvillain/sentinel/internal/reporter"
+	"github.com/weeklyvillain/sentinel/internal/server"
 	"github.com/weeklyvillain/sentinel/internal/store"
+	"github.com/weeklyvillain/sentinel/internal/web"
 )
 
 func main() {
@@ -41,22 +45,30 @@ func run(log *slog.Logger) error {
 	}
 	defer st.Close()
 
-	var gh github.API
-	if cfg.DryRun {
-		gh = &github.DryRun{Log: log}
-		log.Info("DRY_RUN enabled: GitHub calls are logged, not sent")
-	} else {
-		c, err := github.New(cfg.GitHubToken, cfg.GitHubRepo, cfg.GitHubLabels)
+	var app *github.App
+	if cfg.AppConfigured() {
+		key, err := github.ParsePrivateKey(cfg.GitHubAppKey)
 		if err != nil {
 			return err
 		}
-		c.BaseURL = cfg.GitHubAPI
-		gh = c
+		app = &github.App{ID: cfg.GitHubAppID, Slug: cfg.GitHubAppSlug, ClientID: cfg.GitHubAppClientID,
+			ClientSecret: cfg.GitHubAppClientSecret, Key: key, BaseURL: cfg.GitHubAPI, WebURL: cfg.GitHubWebURL}
+		log.Info("GitHub App configured", "app_id", cfg.GitHubAppID)
+	}
+
+	router := &reporter.GitHubRouter{Store: st, App: app, Token: cfg.GitHubToken, DefaultRepo: cfg.GitHubRepo,
+		Labels: cfg.GitHubLabels, BaseURL: cfg.GitHubAPI}
+	if cfg.DryRun {
+		router.DryRun = &github.DryRun{Log: log}
+		log.Info("DRY_RUN enabled: GitHub calls are logged, not sent")
+	} else if app == nil && cfg.GitHubToken == "" {
+		log.Warn("GitHub is not connected (no GitHub App or GITHUB_TOKEN); groups stay pending until it is")
 	}
 
 	provider := buildProvider(cfg, log)
 	log.Info("AI provider", "name", provider.Name())
 
+	dispatcher := &notify.Dispatcher{Store: st, Log: log}
 	rep := reporter.New(reporter.Config{
 		Interval:         cfg.Tick,
 		SettleWindow:     cfg.SettleWindow,
@@ -64,45 +76,40 @@ func run(log *slog.Logger) error {
 		UpdateInterval:   cfg.UpdateInterval,
 		MaxIssuesPerHour: cfg.MaxIssuesPerHour,
 		DownAfter:        cfg.DownAfter,
-	}, st, provider, gh, log)
+	}, st, provider, router, log)
+	rep.Notify = dispatcher
+	alarms := &alarm.Evaluator{Store: st, Notify: dispatcher, Log: log}
 
 	recv := &ingest.Receiver{Sink: rep.Processor, MinSeverity: cfg.MinSeverity, Log: log}
 	otlpMux := http.NewServeMux()
 	recv.Register(otlpMux)
+	otlpMux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok\n")) })
 
-	debugMux := otlpMux
-	if cfg.DebugAddr != "" {
-		debugMux = http.NewServeMux()
+	if cfg.DashboardAuth == "none" {
+		log.Warn("DASHBOARD_AUTH=none: the dashboard is open to anyone who can reach " + cfg.DashboardAddr)
+	} else if app == nil || cfg.GitHubAppClientID == "" {
+		log.Warn("GitHub sign-in needs GITHUB_APP_* credentials incl. CLIENT_ID/SECRET; nobody can sign in yet")
 	}
-	debugMux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte("ok\n"))
-	})
-	debugMux.HandleFunc("GET /groups", func(w http.ResponseWriter, r *http.Request) {
-		groups, err := st.ListGroups(r.Context())
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		services, err := st.ListServices(r.Context())
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if groups == nil {
-			groups = []store.Group{}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		enc.Encode(map[string]any{"groups": groups, "services": services})
-	})
+	static := web.FS()
+	if static == nil {
+		log.Warn("dashboard UI not embedded; build it with: npm --prefix web ci && npm --prefix web run build")
+	}
+	srv := &server.Server{
+		Store: st, App: app, PublicURL: cfg.PublicURL, Dispatcher: dispatcher, Static: static, Log: log,
+		Auth: server.AuthConfig{Mode: cfg.DashboardAuth, AllowedUsers: cfg.AllowedUsers, AllowedOrg: cfg.AllowedOrg},
+		Info: server.Info{
+			DryRun: cfg.DryRun, TokenMode: app == nil && cfg.GitHubToken != "", EnvDefaultRepo: cfg.GitHubRepo,
+			AIProvider: provider.Name(), LogRetention: cfg.LogRetention.String(), MetricRetention: cfg.MetricRetention.String(),
+			DownAfter: cfg.DownAfter.String(), OTLPAddr: cfg.OTLPAddr,
+		},
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	servers := []*http.Server{{Addr: cfg.OTLPAddr, Handler: otlpMux, ReadHeaderTimeout: 10 * time.Second}}
-	if cfg.DebugAddr != "" {
-		servers = append(servers, &http.Server{Addr: cfg.DebugAddr, Handler: debugMux, ReadHeaderTimeout: 10 * time.Second})
+	servers := []*http.Server{
+		{Addr: cfg.OTLPAddr, Handler: otlpMux, ReadHeaderTimeout: 10 * time.Second},
+		{Addr: cfg.DashboardAddr, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second},
 	}
 	errc := make(chan error, len(servers))
 	for _, s := range servers {
@@ -113,7 +120,11 @@ func run(log *slog.Logger) error {
 			}
 		}(s)
 	}
+	log.Info("dashboard", "url", cfg.PublicURL)
 	go rep.Run(ctx)
+	go alarms.Run(ctx)
+	go dispatcher.Run(ctx)
+	go janitor(ctx, st, cfg, log)
 
 	select {
 	case <-ctx.Done():
@@ -127,6 +138,26 @@ func run(log *slog.Logger) error {
 		s.Shutdown(sctx)
 	}
 	return nil
+}
+
+// janitor enforces log/metric retention.
+func janitor(ctx context.Context, st *store.Store, cfg config.Config, log *slog.Logger) {
+	t := time.NewTicker(10 * time.Minute)
+	defer t.Stop()
+	for {
+		now := time.Now()
+		n, err := st.Prune(ctx, now.Add(-cfg.LogRetention), now.Add(-cfg.MetricRetention))
+		if err != nil && ctx.Err() == nil {
+			log.Error("retention prune", "err", err)
+		} else if n > 0 {
+			log.Info("retention prune", "deleted", n)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 // timeoutProvider bounds each draft call.

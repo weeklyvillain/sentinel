@@ -8,6 +8,8 @@ timestamps, trace IDs, samples) is assembled by Sentinel itself.
 
 ```
 app ──OTLP──▶ Collector ──otlphttp──▶ Sentinel :4318 ──▶ SQLite ──▶ reporter loop ──▶ GitHub issues
+                                                              ├──▶ alarms ──▶ webhooks
+                                                              └──▶ dashboard :8080
 ```
 
 ## How it works
@@ -19,7 +21,8 @@ app ──OTLP──▶ Collector ──otlphttp──▶ Sentinel :4318 ──�
      error-like `severity_text` (`error`, `fatal`, `critical`, `panic`, …), or any
      `exception.*` attribute.
    - Error **spans**: status `ERROR`, or an `exception` span event.
-   - **Metrics** only count as heartbeats (for outage detection). Every signal
+   - Every log line is stored (redacted) for search; error spans are stored as
+     log lines too. **Metrics** are stored for charts and alarms. Every signal
      is a heartbeat for its `service.name`.
 2. **Redaction** – bearer/basic tokens, `password=` / `secret=` / `api_key=` /
    `token=` style values, AWS keys, JWTs, GitHub/Slack tokens and URL
@@ -51,21 +54,101 @@ app ──OTLP──▶ Collector ──otlphttp──▶ Sentinel :4318 ──�
    be flagged. When the service sends again, Sentinel comments the outage
    length and closes the issue; a later outage reopens the same issue.
 
+## Dashboard
+
+Sentinel serves a dashboard on `SENTINEL_HTTP_ADDR` (default `:8080`, separate
+from the OTLP port):
+
+- **Overview** – services up/down, open issues, errors by service, log volume
+  by level, firing alarms.
+- **Logs** – full-text search over every log line (and error span), filters
+  for service, level, time range, trace id, attributes and "same error";
+  a clickable volume histogram, live tail and pagination. Query syntax: words
+  are prefix-matched and ANDed, `"exact phrase"`, `-exclude`.
+- **Issues** – error groups by status with their GitHub issue, occurrence
+  chart, first/latest samples with stack traces, ignore / un-ignore, and the
+  reason a group is still pending (e.g. no repository configured).
+- **Metrics** – charts for every OTLP metric a service reports (gauges as-is,
+  cumulative counters as per-interval deltas, histograms as interval means),
+  with avg/sum/max/min/count and per-attribute split.
+- **Services** – discovered automatically from `service.name`; add a service
+  ahead of time, choose which repository its issues go to and extra labels.
+- **Alarms** – rules evaluated every 15s: *log count* (matching text, level,
+  service, window), *metric threshold* (aggregate over a window) and *service
+  down*. A preview shows the current value; state changes are kept as history.
+- **Webhooks** – Slack, Discord or generic JSON targets for `issue.created`,
+  `issue.regression`, `issue.updated`, `service.down`, `service.recovered`
+  (alarm notifications go to the webhooks chosen on each alarm). JSON
+  deliveries carry `X-Sentinel-Event` and, with a secret,
+  `X-Sentinel-Signature: sha256=<HMAC-SHA256(secret, body)>`. Failures (network,
+  429, 5xx) are retried twice and every delivery is logged in the UI.
+- **GitHub** – install the GitHub App, sync repositories, authorize the
+  repositories Sentinel may create issues in, and pick a default repository.
+
+Logs and metric points are kept for `LOG_RETENTION` / `METRIC_RETENTION`
+(default 7 days) and pruned every 10 minutes. Everything is redacted before
+it is stored.
+
+### Signing in
+
+`DASHBOARD_AUTH=github` (the default) uses "Sign in with GitHub" through the
+GitHub App's OAuth credentials. Only users in `ALLOWED_USERS` or active members
+of `ALLOWED_ORG` get in; one of the two is required, so Sentinel fails closed.
+Sessions are HttpOnly cookies (7 days). State-changing API calls require an
+`X-Sentinel-Request` header, which cross-site pages cannot send.
+`DASHBOARD_AUTH=none` disables sign-in and is for local use only.
+
+### GitHub App setup
+
+1. Create a GitHub App (Settings → Developer settings → GitHub Apps → New
+   GitHub App) on your user or organization.
+2. **Callback URL**: `$PUBLIC_URL/auth/callback`. **Setup URL**:
+   `$PUBLIC_URL/github/setup` with "Redirect on update" ticked. Webhook: not
+   needed (untick "Active").
+3. Permissions. Repository: **Issues: Read and write**, **Metadata: Read-only**.
+   Organization: **Members: Read-only** (only needed for `ALLOWED_ORG`).
+4. Generate a private key and a client secret, then start Sentinel with
+   `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_FILE`, `GITHUB_APP_CLIENT_ID`,
+   `GITHUB_APP_CLIENT_SECRET` and `PUBLIC_URL`.
+5. In the dashboard: **GitHub → Install on GitHub**, choose repositories,
+   come back, and switch on the repositories Sentinel may file issues in.
+   Then set a default repository and/or a repository per service.
+
+Issues are routed: service repository → dashboard default → `GITHUB_REPO`.
+With the app, the repository must be visible to an installation *and*
+authorized in the dashboard; otherwise the group stays pending and the Issues
+page says why. Installation tokens are short-lived and minted on demand.
+
+`GITHUB_TOKEN` + `GITHUB_REPO` (a personal access token) still work when no
+app is configured; the dashboard then cannot restrict repositories.
+
 ## Running
 
 ```bash
+npm --prefix web ci && npm --prefix web run build   # only after changing the UI; the build is committed
 go build -o bin/sentinel ./cmd/sentinel
-GITHUB_TOKEN=ghp_... GITHUB_REPO=acme/ops ANTHROPIC_API_KEY=sk-ant-... ./bin/sentinel
+GITHUB_APP_ID=123456 GITHUB_APP_PRIVATE_KEY_FILE=sentinel.pem \
+GITHUB_APP_CLIENT_ID=Iv1.abc GITHUB_APP_CLIENT_SECRET=... \
+PUBLIC_URL=https://sentinel.example.com ALLOWED_ORG=acme \
+ANTHROPIC_API_KEY=sk-ant-... ./bin/sentinel
 ```
 
-Try it without GitHub or an AI key:
+Try it locally without GitHub, sign-in or an AI key, with demo traffic:
 
 ```bash
-DRY_RUN=true AI_PROVIDER=none ./bin/sentinel
+DRY_RUN=true DASHBOARD_AUTH=none AI_PROVIDER=none ./bin/sentinel
 ```
 
-Debug endpoints (on the OTLP port unless `SENTINEL_HTTP_ADDR` is set):
-`GET /healthz`, `GET /groups` (JSON view of groups and services).
+```bash
+go run ./cmd/sentinel-demo -endpoint http://localhost:4318
+```
+
+Then open http://localhost:8080. `cmd/sentinel-demo` sends logs (with a
+backfilled history), error spans and metrics for four fake services; one of
+them stops after 90s to show outage detection.
+
+For UI work, `npm --prefix web run dev` serves the React app with hot reload
+and proxies `/api` to a Sentinel on :8080 (`SENTINEL_URL` to change).
 
 ### End-to-end check
 
@@ -75,19 +158,26 @@ Debug endpoints (on the OTLP port unless `SENTINEL_HTTP_ADDR` is set):
 
 Builds the binary, runs it in `DRY_RUN`, POSTs a burst of 50 OTLP/JSON error
 logs with different order ids, emails, IPs, durations and secrets, and checks
-that they became one group and one (logged) issue with no secret in the
-output. Use `PORT=14318` if 4318 is taken.
+that they became one group and one (logged) issue, that all 50 lines are
+searchable through the dashboard API, and that no secret is in the output or
+the stored logs. Use `PORT=14318 HTTP_PORT=18090` if the defaults are taken.
 
 ## Configuration
 
 All configuration is via environment variables. Durations accept Go syntax
-(`90s`, `5m`) or plain seconds.
+(`90s`, `5m`, `168h`) or plain seconds.
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `SENTINEL_OTLP_ADDR` | `:4318` | OTLP/HTTP listen address |
-| `SENTINEL_HTTP_ADDR` | *(empty)* | Separate address for `/healthz` and `/groups`; empty = same as OTLP |
+| `SENTINEL_HTTP_ADDR` | `:8080` | Dashboard + API listen address |
+| `PUBLIC_URL` | `http://localhost:8080` | External dashboard URL (OAuth and setup callbacks) |
 | `SENTINEL_DB` | `sentinel.db` | SQLite database path |
+| `DASHBOARD_AUTH` | `github` | `github` (sign in with GitHub) or `none` (local only) |
+| `ALLOWED_USERS` | – | Comma-separated GitHub logins allowed to sign in |
+| `ALLOWED_ORG` | – | GitHub organization whose members may sign in |
+| `LOG_RETENTION` | `168h` | How long log lines are kept |
+| `METRIC_RETENTION` | `168h` | How long metric points are kept |
 | `MIN_SEVERITY` | `17` | Lowest log `severity_number` treated as an error |
 | `TICK_INTERVAL` | `10s` | Reporter loop interval |
 | `SETTLE_WINDOW` | `60s` | Wait after a group's first event before filing |
@@ -95,10 +185,14 @@ All configuration is via environment variables. Durations accept Go syntax
 | `UPDATE_INTERVAL` | `30m` | At most one update comment per issue per interval |
 | `MAX_ISSUES_PER_HOUR` | `10` | Cap on new issues per rolling hour (`-1` = unlimited) |
 | `DOWN_AFTER` | `5m` | Silence before a service counts as down; `0` disables |
-| `GITHUB_TOKEN` | – | Token with `issues: write` on the repo (required unless `DRY_RUN`) |
-| `GITHUB_REPO` | – | `owner/name` (required unless `DRY_RUN`) |
-| `GITHUB_LABELS` | – | Comma-separated labels for new issues, e.g. `sentinel,bug` |
-| `GITHUB_API_URL` | `https://api.github.com` | For GitHub Enterprise |
+| `GITHUB_APP_ID` | – | GitHub App id (enables app mode) |
+| `GITHUB_APP_PRIVATE_KEY_FILE` / `GITHUB_APP_PRIVATE_KEY` | – | App private key (PEM file, or PEM text with `\n`) |
+| `GITHUB_APP_CLIENT_ID` / `GITHUB_APP_CLIENT_SECRET` | – | App OAuth credentials for dashboard sign-in |
+| `GITHUB_APP_SLUG` | looked up | App slug for the install link |
+| `GITHUB_TOKEN` | – | Personal access token (used only without an app) |
+| `GITHUB_REPO` | – | Fallback `owner/name` for issues |
+| `GITHUB_LABELS` | – | Comma-separated labels for every new issue, e.g. `sentinel,bug` |
+| `GITHUB_API_URL` / `GITHUB_WEB_URL` | `https://api.github.com` / `https://github.com` | For GitHub Enterprise |
 | `DRY_RUN` | `false` | Log GitHub operations instead of performing them |
 | `AI_PROVIDER` | `anthropic` | `anthropic`, `openai` (any OpenAI-compatible server) or `none` |
 | `AI_MODEL` | `claude-haiku-5-5` for anthropic | Model name; required for `openai` |
@@ -174,8 +268,14 @@ go test ./...
 go vet ./...
 ```
 
-Layout: `internal/ingest` (OTLP receiver), `internal/redact`,
-`internal/fingerprint`, `internal/store` (SQLite, WAL, single connection),
-`internal/reporter` (issue lifecycle and down detection), `internal/ai`
-(Anthropic, OpenAI-compatible, template), `internal/github` (REST client and
-dry-run), `cmd/sentinel`.
+Layout: `internal/ingest` (OTLP receiver, metric conversion), `internal/redact`,
+`internal/fingerprint`, `internal/store` (SQLite: one writer connection plus a
+read pool in WAL mode, FTS5 log index), `internal/reporter` (issue lifecycle,
+down detection, repository routing), `internal/ai` (Anthropic,
+OpenAI-compatible, template), `internal/github` (REST client, GitHub App auth,
+dry-run), `internal/alarm`, `internal/notify` (webhooks), `internal/server`
+(dashboard API and auth), `internal/web` (embedded build of `web/`, the React
+app), `cmd/sentinel`, `cmd/sentinel-demo`.
+
+The UI build in `internal/web/dist` is committed so `go build` works without
+Node; rebuild it with `npm --prefix web run build` after changing `web/`.

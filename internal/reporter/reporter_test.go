@@ -120,7 +120,7 @@ func newHarness(t *testing.T, cfg Config) *harness {
 	t.Cleanup(func() { st.Close() })
 	h := &harness{t: t, ctx: context.Background(), now: time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC), st: st, gh: newFakeGH(), ai: &fakeAI{}}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h.r = New(cfg, st, h.ai, h.gh, log)
+	h.r = New(cfg, st, h.ai, StaticRouter{Repo: "acme/app", API: h.gh}, log)
 	h.r.Now = func() time.Time { return h.now }
 	h.r.StartedAt = h.now
 	return h
@@ -361,7 +361,7 @@ func TestMarkerDedupeAfterDBLoss(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st2.Close()
-	r2 := New(Config{SettleWindow: 0, DownAfter: 0}, st2, h.ai, h.gh, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	r2 := New(Config{SettleWindow: 0, DownAfter: 0}, st2, h.ai, StaticRouter{Repo: "acme/app", API: h.gh}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	r2.Now = func() time.Time { return h.now }
 	r2.Processor.Event(h.ctx, event.Event{Kind: event.KindLog, Service: "checkout", Environment: "prod", Time: h.now, ExcType: "db.ConnError", ExcMessage: "boom 1"})
 	r2.Tick(h.ctx)

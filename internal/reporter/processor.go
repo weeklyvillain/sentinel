@@ -9,6 +9,7 @@ import (
 
 	"github.com/weeklyvillain/sentinel/internal/event"
 	"github.com/weeklyvillain/sentinel/internal/fingerprint"
+	"github.com/weeklyvillain/sentinel/internal/ingest"
 	"github.com/weeklyvillain/sentinel/internal/redact"
 	"github.com/weeklyvillain/sentinel/internal/store"
 )
@@ -37,6 +38,35 @@ func (p *Processor) Heartbeat(ctx context.Context, service, env string, t time.T
 func (p *Processor) Event(ctx context.Context, e event.Event) {
 	if _, err := p.Record(ctx, e); err != nil {
 		p.log().Error("record event", "service", e.Service, "err", err)
+	}
+}
+
+// Records redacts and stores a batch of log records; errors are also grouped.
+func (p *Processor) Records(ctx context.Context, recs []ingest.Record) {
+	logs := make([]store.LogRecord, 0, len(recs))
+	for _, r := range recs {
+		l := r.Log
+		l.Body = redact.String(l.Body)
+		redact.Attrs(l.Attrs)
+		if r.Error != nil {
+			g, err := p.Record(ctx, *r.Error)
+			if err != nil {
+				p.log().Error("record event", "service", r.Error.Service, "err", err)
+			} else {
+				l.Fingerprint = g.Fingerprint
+			}
+		}
+		logs = append(logs, l)
+	}
+	if err := p.Store.InsertLogs(ctx, logs); err != nil {
+		p.log().Error("insert logs", "count", len(logs), "err", err)
+	}
+}
+
+// Metrics stores metric points.
+func (p *Processor) Metrics(ctx context.Context, pts []store.MetricPoint) {
+	if err := p.Store.InsertMetrics(ctx, pts); err != nil {
+		p.log().Error("insert metrics", "count", len(pts), "err", err)
 	}
 }
 

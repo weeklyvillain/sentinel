@@ -19,6 +19,7 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -31,14 +32,18 @@ import (
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 
 	"github.com/weeklyvillain/sentinel/internal/event"
+	"github.com/weeklyvillain/sentinel/internal/store"
 )
 
 // Sink receives what the receiver extracts.
 type Sink interface {
 	// Heartbeat is called once per service per request, for every signal.
 	Heartbeat(ctx context.Context, service, env string, t time.Time)
-	// Event is called for every detected error.
-	Event(ctx context.Context, e event.Event)
+	// Records is called once per request with every log record (and error
+	// span); errors carry a normalized Event.
+	Records(ctx context.Context, recs []Record)
+	// Metrics is called with converted metric points.
+	Metrics(ctx context.Context, pts []store.MetricPoint)
 }
 
 // Receiver is the OTLP/HTTP handler.
@@ -49,6 +54,14 @@ type Receiver struct {
 	MaxBodyBytes int64
 	Log          *slog.Logger
 	Now          func() time.Time
+
+	deltaOnce sync.Once
+	delta     *deltaTracker
+}
+
+func (r *Receiver) deltas() *deltaTracker {
+	r.deltaOnce.Do(func() { r.delta = newDeltaTracker() })
+	return r.delta
 }
 
 // Register mounts the OTLP endpoints on mux.
@@ -231,6 +244,13 @@ func isErrorText(s string) bool {
 	return false
 }
 
+// Record is one stored log line (or error span). Error is set when the record
+// is an error that should be grouped.
+type Record struct {
+	Log   store.LogRecord
+	Error *event.Event
+}
+
 func (r *Receiver) logs(ctx context.Context, body []byte, isJSON bool) error {
 	var req logspb.LogsData
 	if err := unmarshal(body, isJSON, &req); err != nil {
@@ -241,6 +261,7 @@ func (r *Receiver) logs(ctx context.Context, body []byte, isJSON bool) error {
 		minSev = int32(logspb.SeverityNumber_SEVERITY_NUMBER_ERROR)
 	}
 	seen := map[string]bool{}
+	var batch []Record
 	for _, rl := range req.GetResourceLogs() {
 		ri := resourceInfo(rl.GetResource())
 		r.heartbeat(ctx, seen, ri)
@@ -255,30 +276,72 @@ func (r *Receiver) logs(ctx context.Context, body []byte, isJSON bool) error {
 				if !hasExc {
 					_, hasExc = attrs["exception.stacktrace"]
 				}
+				sevNum := int32(lr.GetSeverityNumber())
+				if sevNum == 0 {
+					sevNum = severityFromText(lr.GetSeverityText())
+				}
 				isErr := int32(lr.GetSeverityNumber()) >= minSev || isErrorText(lr.GetSeverityText()) || hasExc
-				if !isErr {
-					continue
+				ts := r.pickTime(lr.GetTimeUnixNano(), lr.GetObservedTimeUnixNano())
+				rec := Record{Log: store.LogRecord{
+					Time:         ts,
+					Service:      ri.service,
+					Env:          ri.env,
+					Kind:         "log",
+					Severity:     sevNum,
+					SeverityText: severity(lr),
+					Body:         anyString(lr.GetBody()),
+					TraceID:      hexID(lr.GetTraceId()),
+					SpanID:       hexID(lr.GetSpanId()),
+					Attrs:        attrs,
+				}}
+				if isErr {
+					if rec.Log.Severity < 17 {
+						rec.Log.Severity = 17
+					}
+					rec.Error = &event.Event{
+						Kind:        event.KindLog,
+						Service:     ri.service,
+						Environment: ri.env,
+						Time:        ts,
+						Severity:    severity(lr),
+						Message:     rec.Log.Body,
+						ExcType:     attrs["exception.type"],
+						ExcMessage:  attrs["exception.message"],
+						Stacktrace:  attrs["exception.stacktrace"],
+						TraceID:     rec.Log.TraceID,
+						SpanID:      rec.Log.SpanID,
+						Attributes:  mergeAttrs(ri.attrs, attrs),
+					}
 				}
-				merged := mergeAttrs(ri.attrs, attrs)
-				e := event.Event{
-					Kind:        event.KindLog,
-					Service:     ri.service,
-					Environment: ri.env,
-					Time:        r.pickTime(lr.GetTimeUnixNano(), lr.GetObservedTimeUnixNano()),
-					Severity:    severity(lr),
-					Message:     anyString(lr.GetBody()),
-					ExcType:     attrs["exception.type"],
-					ExcMessage:  attrs["exception.message"],
-					Stacktrace:  attrs["exception.stacktrace"],
-					TraceID:     hexID(lr.GetTraceId()),
-					SpanID:      hexID(lr.GetSpanId()),
-					Attributes:  merged,
-				}
-				r.Sink.Event(ctx, e)
+				batch = append(batch, rec)
 			}
 		}
 	}
+	r.Sink.Records(ctx, batch)
 	return nil
+}
+
+// severityFromText maps a severity_text to a severity_number when the
+// producer only set the text.
+func severityFromText(s string) int32 {
+	s = strings.ToLower(strings.TrimSpace(s))
+	switch {
+	case s == "":
+		return 0
+	case strings.HasPrefix(s, "trace"):
+		return 1
+	case strings.HasPrefix(s, "debug"):
+		return 5
+	case strings.HasPrefix(s, "info"), s == "notice":
+		return 9
+	case strings.HasPrefix(s, "warn"):
+		return 13
+	case s == "fatal" || s == "emerg" || s == "emergency" || s == "panic" || s == "alert":
+		return 21
+	case isErrorText(s):
+		return 17
+	}
+	return 0
 }
 
 func severity(lr *logspb.LogRecord) string {
@@ -297,6 +360,7 @@ func (r *Receiver) traces(ctx context.Context, body []byte, isJSON bool) error {
 		return err
 	}
 	seen := map[string]bool{}
+	var batch []Record
 	for _, rs := range req.GetResourceSpans() {
 		ri := resourceInfo(rs.GetResource())
 		r.heartbeat(ctx, seen, ri)
@@ -334,10 +398,18 @@ func (r *Receiver) traces(ctx context.Context, body []byte, isJSON bool) error {
 					SpanID:      hexID(sp.GetSpanId()),
 					Attributes:  mergeAttrs(ri.attrs, attrs),
 				}
-				r.Sink.Event(ctx, e)
+				// Error spans are also stored as searchable log lines.
+				logAttrs := mergeAttrs(attrs, exc)
+				logAttrs["span.name"] = sp.GetName()
+				body := e.Summary()
+				batch = append(batch, Record{Error: &e, Log: store.LogRecord{
+					Time: e.Time, Service: e.Service, Env: e.Environment, Kind: "span", Severity: 17, SeverityText: "ERROR",
+					Body: body, TraceID: e.TraceID, SpanID: e.SpanID, Attrs: logAttrs,
+				}})
 			}
 		}
 	}
+	r.Sink.Records(ctx, batch)
 	return nil
 }
 
@@ -347,8 +419,18 @@ func (r *Receiver) metrics(ctx context.Context, body []byte, isJSON bool) error 
 		return err
 	}
 	seen := map[string]bool{}
+	var pts []store.MetricPoint
 	for _, rm := range req.GetResourceMetrics() {
-		r.heartbeat(ctx, seen, resourceInfo(rm.GetResource()))
+		ri := resourceInfo(rm.GetResource())
+		r.heartbeat(ctx, seen, ri)
+		for _, sm := range rm.GetScopeMetrics() {
+			for _, m := range sm.GetMetrics() {
+				pts = append(pts, r.deltas().convert(ri.service, m, r.now())...)
+			}
+		}
+	}
+	if len(pts) > 0 {
+		r.Sink.Metrics(ctx, pts)
 	}
 	return nil
 }
