@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 340" width="960" height="340" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6b7280"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="960" height="340" rx="14" fill="#111214"/>
+
+  <!-- Sources -->
+  <text x="40" y="44" fill="#9ca3af" font-size="12" font-weight="600" letter-spacing="1">YOUR SERVICES</text>
+  <g font-size="14" fill="#e5e7eb">
+    <rect x="40" y="62" width="200" height="56" rx="10" fill="#1b1c1f" stroke="#2b2d31"/>
+    <text x="58" y="86" font-weight="600">OpenTelemetry</text>
+    <text x="58" y="105" fill="#9ca3af" font-size="12">SDKs and Collectors · OTLP</text>
+
+    <rect x="40" y="134" width="200" height="56" rx="10" fill="#1b1c1f" stroke="#2b2d31"/>
+    <text x="58" y="158" font-weight="600">Sentry SDKs</text>
+    <text x="58" y="177" fill="#9ca3af" font-size="12">drop-in: swap the DSN</text>
+
+    <rect x="40" y="206" width="200" height="56" rx="10" fill="#1b1c1f" stroke="#2b2d31"/>
+    <text x="58" y="230" font-weight="600">Browser</text>
+    <text x="58" y="249" fill="#9ca3af" font-size="12">Faro · Datadog logs · JSON</text>
+  </g>
+  <text x="40" y="296" fill="#9ca3af" font-size="12">Uptime checks probe your</text>
+  <text x="40" y="313" fill="#9ca3af" font-size="12">public URLs from Sentinel.</text>
+
+  <g stroke="#6b7280" stroke-width="1.5" fill="none" marker-end="url(#arrow)">
+    <path d="M240,90 C280,90 280,162 318,162"/>
+    <path d="M240,162 L318,162"/>
+    <path d="M240,234 C280,234 280,162 318,162"/>
+  </g>
+
+  <!-- Sentinel -->
+  <rect x="320" y="34" width="340" height="280" rx="14" fill="#16171a" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="344" y="66" fill="#f9fafb" font-size="18" font-weight="700">Sentinel</text>
+  <text x="430" y="66" fill="#9ca3af" font-size="12">one Go binary + SQLite</text>
+  <g font-size="13" fill="#e5e7eb">
+    <rect x="344" y="84" width="292" height="40" rx="8" fill="#1f2937"/>
+    <text x="360" y="109"><tspan font-weight="600">Redact</tspan><tspan fill="#9ca3af">  tokens, keys, passwords removed first</tspan></text>
+    <rect x="344" y="132" width="292" height="40" rx="8" fill="#1f2937"/>
+    <text x="360" y="157"><tspan font-weight="600">Group</tspan><tspan fill="#9ca3af">  10,000 errors → 1 fingerprint</tspan></text>
+    <rect x="344" y="180" width="292" height="40" rx="8" fill="#1f2937"/>
+    <text x="360" y="205"><tspan font-weight="600">Detect</tspan><tspan fill="#9ca3af">  outages, N+1, slow endpoints</tspan></text>
+    <rect x="344" y="228" width="292" height="40" rx="8" fill="#1f2937"/>
+    <text x="360" y="253"><tspan font-weight="600">Write</tspan><tspan fill="#9ca3af">  AI drafts the title and analysis</tspan></text>
+  </g>
+  <text x="344" y="296" fill="#9ca3af" font-size="12">Logs, traces and metrics kept for search and charts</text>
+
+  <g stroke="#6b7280" stroke-width="1.5" fill="none" marker-end="url(#arrow)">
+    <path d="M660,162 C700,162 700,90 718,90"/>
+    <path d="M660,162 L718,162"/>
+    <path d="M660,162 C700,162 700,234 718,234"/>
+  </g>
+
+  <!-- Outputs -->
+  <text x="720" y="44" fill="#9ca3af" font-size="12" font-weight="600" letter-spacing="1">YOU GET</text>
+  <g font-size="14" fill="#e5e7eb">
+    <rect x="720" y="62" width="200" height="56" rx="10" fill="#1b1c1f" stroke="#2b2d31"/>
+    <text x="738" y="86" font-weight="600">GitHub issues</text>
+    <text x="738" y="105" fill="#9ca3af" font-size="12">one per problem, kept current</text>
+
+    <rect x="720" y="134" width="200" height="56" rx="10" fill="#1b1c1f" stroke="#2b2d31"/>
+    <text x="738" y="158" font-weight="600">Alerts</text>
+    <text x="738" y="177" fill="#9ca3af" font-size="12">Slack · Discord · webhooks</text>
+
+    <rect x="720" y="206" width="200" height="56" rx="10" fill="#1b1c1f" stroke="#2b2d31"/>
+    <text x="738" y="230" font-weight="600">Dashboard</text>
+    <text x="738" y="249" fill="#9ca3af" font-size="12">logs · traces · metrics</text>
+  </g>
+  <text x="720" y="296" fill="#9ca3af" font-size="12">Optional: Claude Code opens</text>
+  <text x="720" y="313" fill="#9ca3af" font-size="12">a pull request that fixes it.</text>
+</svg>

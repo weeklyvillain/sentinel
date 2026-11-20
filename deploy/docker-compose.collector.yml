@@ -1,0 +1,38 @@
+# OpenTelemetry Collector for an APP server, in Docker. It forwards the apps'
+# telemetry and this machine's CPU/memory/disk/network to Sentinel, and
+# buffers on disk while Sentinel is unreachable.
+#
+#   export SENTINEL_ENDPOINT=https://sentinel.example.com
+#   export SENTINEL_INGEST_TOKEN=<INGEST_TOKEN from the Sentinel server>
+#   export HOST_SERVICE_NAME=host-$(hostname)
+#   docker compose -f docker-compose.collector.yml up -d
+#
+# Apps on this machine then send to http://localhost:4318 (OTLP/HTTP) or
+# localhost:4317 (gRPC), e.g. OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318.
+#
+# It uses the host's network (so apps reach it on localhost and network
+# metrics are the host's) and reads the host filesystem read-only for disk
+# metrics. It runs as root so it can read /hostfs and write its queue volume.
+name: sentinel-collector
+
+services:
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:0.120.0
+    restart: unless-stopped
+    user: "0:0"
+    network_mode: host
+    pid: host
+    command:
+      - --config=/etc/otelcol/config.yaml
+      - --set=receivers.hostmetrics.root_path=/hostfs
+    environment:
+      SENTINEL_ENDPOINT: ${SENTINEL_ENDPOINT:?set SENTINEL_ENDPOINT, e.g. https://sentinel.example.com}
+      SENTINEL_INGEST_TOKEN: ${SENTINEL_INGEST_TOKEN:?set SENTINEL_INGEST_TOKEN}
+      HOST_SERVICE_NAME: ${HOST_SERVICE_NAME:?set HOST_SERVICE_NAME, e.g. host-app-1}
+    volumes:
+      - ./otel-collector-app-server.yaml:/etc/otelcol/config.yaml:ro
+      - /:/hostfs:ro
+      - queue:/var/lib/otelcol
+
+volumes:
+  queue:

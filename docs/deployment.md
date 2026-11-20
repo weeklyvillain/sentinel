@@ -19,6 +19,14 @@ taking the monitoring down with it.
 ## 1. Sentinel server (Docker Compose)
 
 ```bash
+git clone https://github.com/weeklyvillain/sentinel.git && sentinel/deploy/setup.sh
+```
+
+[`setup.sh`](../deploy/setup.sh) checks Docker, asks for the domain, writes
+`deploy/.env`, starts Sentinel behind Caddy and prints the address and the
+setup code. Run it again to upgrade. By hand, it is:
+
+```bash
 git clone https://github.com/weeklyvillain/sentinel.git sentinel && cd sentinel/deploy
 echo "SENTINEL_DOMAIN=sentinel.example.com" > .env
 docker compose up -d --build
@@ -58,15 +66,21 @@ add `-f docker-compose.proxy-network.yml`. Configure dashboard sign-in first.
 
 ## 2. Every app server (OpenTelemetry Collector)
 
-Install **otelcol-contrib** and use
-[`deploy/otel-collector-app-server.yaml`](../deploy/otel-collector-app-server.yaml)
-with:
+With Docker, copy the `deploy/` folder (or clone the repository) to the app
+server and run:
 
 ```bash
-SENTINEL_ENDPOINT=https://sentinel.example.com
-SENTINEL_INGEST_TOKEN=<the ingest token from Settings → Access>
-HOST_SERVICE_NAME=host-app-1
+export SENTINEL_ENDPOINT=https://sentinel.example.com
+export SENTINEL_INGEST_TOKEN=<the ingest token from Settings → Access>
+export HOST_SERVICE_NAME=host-$(hostname)
+docker compose -f docker-compose.collector.yml up -d
 ```
+
+[`docker-compose.collector.yml`](../deploy/docker-compose.collector.yml) runs
+otelcol-contrib on the host network with the host filesystem mounted
+read-only for disk metrics. Without Docker, install **otelcol-contrib** and use
+[`deploy/otel-collector-app-server.yaml`](../deploy/otel-collector-app-server.yaml)
+with the same three environment variables.
 
 It:
 

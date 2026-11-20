@@ -1,149 +1,202 @@
-# Sentinel
+<h1 align="center">Sentinel</h1>
 
-**Self-hosted error tracking and monitoring for OpenTelemetry that files one
-GitHub issue per real problem, not one per log line.**
+<p align="center">
+  <b>Self-hosted error tracking for OpenTelemetry that files one GitHub issue per real problem, not one per log line.</b>
+</p>
 
-Send Sentinel your logs, traces and metrics: over OpenTelemetry, from an
-existing Sentry SDK, or from the browser. It finds errors, outages and slow
-endpoints, groups them deterministically and keeps a single GitHub issue up
-to date for each distinct problem. A small AI model writes the issue's title
-and analysis. Every fact in the issue (counts, timestamps, trace IDs,
-samples) comes from Sentinel itself, not from the model.
+<p align="center">
+  <a href="#try-it-in-one-minute">Try it</a> ·
+  <a href="#host-it-in-three-steps">Host it</a> ·
+  <a href="#connect-your-servers">Connect your servers</a> ·
+  <a href="#documentation">Docs</a>
+</p>
 
-It ships as one Go binary with an embedded dashboard and a SQLite database.
-You don't need Kafka, ClickHouse or Elasticsearch, and it sets itself up from
-the browser.
+<p align="center">
+  <img src="docs/images/overview.png" alt="Sentinel overview: services, open issues, errors by service and log volume" width="900">
+</p>
 
-```
-app ──OTLP──▶ Collector ──otlphttp──▶ Sentinel :4318 ──▶ SQLite ──▶ reporter ──▶ GitHub issues
-                                                              ├──▶ alarms ──▶ Slack / Discord / webhooks
-                                                              └──▶ dashboard :8080
-```
+Send Sentinel your logs, traces and metrics. It finds errors, outages and slow
+endpoints, groups them, and keeps **one GitHub issue up to date for each
+distinct problem**. 10,000 timeouts make one issue, not 10,000. A small AI model
+writes the title and analysis, while every fact in the issue (counts,
+timestamps, trace IDs, samples) comes from Sentinel itself.
 
-## Features
+It is **one Go binary with SQLite**. You don't need Kafka, ClickHouse or
+Elasticsearch, and you finish setting it up in the browser.
 
-- **Issues that stay quiet.** Errors are fingerprinted by service, exception
-  type and normalized stack or message, so 10,000 occurrences make one issue.
-  It gets at most one update comment per interval, is reopened with a
-  *Regression* note if a fixed error comes back, and stays closed if you
-  marked it *not planned*.
-- **Outage detection.** Watched services that go quiet, and failing HTTP
-  uptime checks, open an issue and notify your webhooks. When the service
-  recovers, Sentinel comments how long the outage lasted and closes the issue.
-- **Performance issues** from traces: N+1 queries, slow endpoints (p95) and
-  latency regressions between releases.
-- **Many ways in.** OTLP from any OpenTelemetry SDK or Collector, Sentry SDKs
-  as a drop-in (just swap the DSN), Grafana Faro, Datadog Browser Logs and
-  plain JSON. Structured JSON and logfmt lines are parsed into fields.
-- **Secrets never leave the box.** Tokens, passwords, API keys, JWTs and URL
-  credentials are redacted *before* anything is stored, sent to a model or
-  posted to GitHub.
-- **A full dashboard:** log search with live tail, trace waterfalls across
-  services, per-operation latency, custom metric dashboards, alarms, uptime
-  checks, SLOs with burn-rate alerts, and maintenance windows.
-- **Releases and tags.** `service.version` is tracked per issue (first seen,
-  last seen, regressed in), along with users affected and a breakdown by
-  environment, host, route, browser and more.
-- **Optional automated fixes.** Hand an issue to Claude Code, which opens a
-  pull request that says `Fixes #N`, even across several repositories. It
-  can run in your repository's GitHub Actions or in a fixer container next
-  to Sentinel.
-- **Choice of AI provider:** Anthropic (default), any OpenAI-compatible
-  server such as Ollama or llama.cpp, Claude Code in the fixer container, or
-  none at all (a deterministic template).
+<p align="center">
+  <img src="docs/images/architecture.svg" alt="Services send OpenTelemetry, Sentry or browser telemetry to Sentinel, which redacts, groups and detects problems, then files GitHub issues, sends alerts and serves a dashboard" width="900">
+</p>
 
-## Quick start
+## Try it in one minute
 
-Try it on your machine in a minute, with no GitHub, sign-in or AI key needed.
-You need Go 1.26+.
+You only need Docker. This starts Sentinel with four fake services sending
+traffic. No GitHub account, sign-in or AI key is needed.
 
 ```bash
 git clone https://github.com/weeklyvillain/sentinel.git && cd sentinel
+docker compose -f deploy/docker-compose.demo.yml up --build
+```
+
+Open **<http://localhost:8080>**. Within a minute you'll see issues being
+grouped. After 90 seconds one service goes quiet, so you can watch outage
+detection, and halfway through, checkout ships a slower release. GitHub
+calls are only logged in this mode.
+
+<details>
+<summary>Without Docker (Go 1.26+)</summary>
+
+```bash
 go build -o bin/sentinel ./cmd/sentinel
-SENTINEL_HTTP_ADDR=127.0.0.1:8080 DRY_RUN=true DASHBOARD_AUTH=none AI_PROVIDER=none ./bin/sentinel
+INGEST_TOKEN=demo SENTINEL_HTTP_ADDR=127.0.0.1:8080 DRY_RUN=true DASHBOARD_AUTH=none AI_PROVIDER=none ./bin/sentinel
 ```
 
-In a second terminal, send it some demo traffic:
+In a second terminal:
 
 ```bash
-go run ./cmd/sentinel-demo -endpoint http://localhost:4318
+go run ./cmd/sentinel-demo -endpoint http://localhost:4318 -token demo
 ```
 
-Open <http://localhost:8080>. The demo simulates four services with logs,
-traces and metrics. One of them stops after 90 seconds so you can watch
-outage detection, and halfway through, the checkout service ships a slower
-release. In `DRY_RUN` mode, GitHub operations are logged instead of performed.
+</details>
 
-## Running it for real
+## What you get
 
-Run Sentinel on its **own** server, not on the machines it watches, so it can
-still report when they go down. You only need a domain name pointing at the
-server and ports 80 and 443 open:
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/issue.png" alt="An issue with occurrences over time, tags and a redacted sample with its stack trace"></td>
+    <td width="50%"><img src="docs/images/logs.png" alt="Log search with a volume histogram and level and service filters"></td>
+  </tr>
+  <tr>
+    <td><b>Issues that stay quiet.</b> One per fingerprint, with occurrences, releases, tags and samples. A fixed error that comes back is reopened as a <i>Regression</i>.</td>
+    <td><b>Log search.</b> Every line, redacted and searchable, with live tail, saved searches and charts of any field.</td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/trace.png" alt="A trace waterfall across the checkout and billing services"></td>
+    <td><img src="docs/images/uptime.png" alt="Uptime checks, one failing"></td>
+  </tr>
+  <tr>
+    <td><b>Traces across services.</b> Waterfalls, per-endpoint latency, N+1 queries and slow-release detection.</td>
+    <td><b>Uptime and outages.</b> HTTP checks and services that go quiet open an issue, notify Slack or Discord, and close it with the outage length when they recover.</td>
+  </tr>
+</table>
+
+Also included: custom metric dashboards, alarms, SLOs with burn-rate alerts,
+maintenance windows, Sentry SDKs as a drop-in (just swap the DSN), and
+optional **automated fixes**, where Claude Code opens a pull request that
+says `Fixes #N`.
+
+## Host it in three steps
+
+Run Sentinel on its **own** small server, not on the machines it watches, so
+it can still tell you when they go down. Any Linux VM with Docker works.
+
+**1. Point a domain at the server.** Create a DNS record such as
+`sentinel.example.com` and open ports **80** and **443**. HTTPS certificates
+are automatic.
+
+**2. Run the installer on the server.**
 
 ```bash
-git clone https://github.com/weeklyvillain/sentinel.git && cd sentinel/deploy
+git clone https://github.com/weeklyvillain/sentinel.git && sentinel/deploy/setup.sh
+```
+
+It checks Docker, asks for your domain, starts Sentinel behind Caddy, and
+prints something like:
+
+```text
+Sentinel is running. Finish in the browser:
+
+    1. Open        https://sentinel.example.com
+    2. Enter code  7KQ2-M9XD
+    3. Click "Create GitHub App", install it, and sign in.
+```
+
+**3. Finish in the browser.** Enter the code and click **Create GitHub App**.
+Sentinel registers its own GitHub App, so there are no keys to copy. Then
+install the app on your repositories and sign in. **Setup** in the sidebar
+walks you through the rest and checks each step for you.
+
+To upgrade, run `deploy/setup.sh` again. Your data and settings are kept.
+
+<details>
+<summary>Doing it by hand, or behind an existing reverse proxy</summary>
+
+```bash
+cd sentinel/deploy
 echo "SENTINEL_DOMAIN=sentinel.example.com" > .env
-docker compose up -d --build                     # Sentinel behind Caddy with automatic HTTPS
+docker compose up -d --build
 docker compose logs sentinel | grep "setup code"
 ```
 
-Open `https://SENTINEL_DOMAIN` and enter the setup code. Sentinel then
-creates its own GitHub App through GitHub's manifest flow, so there are no
-keys to copy. You install the app, sign in, and pick repositories. From
-there, **Setup** in the sidebar walks you through the rest: telemetry,
-services, AI, fixes, webhooks and uptime checks.
+If another proxy already owns ports 80 and 443, use
+`docker-compose.behind-proxy.yml`. See the
+[deployment guide](docs/deployment.md#when-another-proxy-already-owns-80443).
 
-Point your collectors at it with the
-[ready-made collector config](deploy/otel-collector-app-server.yaml) and the
-ingest token from *Settings → Access*. The [deployment guide](docs/deployment.md)
-has the full details, including running behind an existing reverse proxy.
+</details>
+
+## Connect your servers
+
+Copy the ingest token from **Settings → Access**, then on each app server:
+
+```bash
+cd sentinel/deploy
+export SENTINEL_ENDPOINT=https://sentinel.example.com
+export SENTINEL_INGEST_TOKEN=<token>
+export HOST_SERVICE_NAME=host-$(hostname)
+docker compose -f docker-compose.collector.yml up -d
+```
+
+This runs an OpenTelemetry Collector that forwards your apps' telemetry,
+sends the machine's CPU, memory, disk and network, and buffers on disk while
+Sentinel is unreachable. Point your apps at it with:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+OTEL_SERVICE_NAME=checkout
+```
+
+Already using Sentry? Swap the DSN instead. [Sending telemetry](docs/sending-telemetry.md)
+covers Sentry SDKs, browser apps, structured logs and an existing Collector.
 
 ## Documentation
 
 | | |
 |---|---|
 | [How it works](docs/how-it-works.md) | Ingest, redaction, grouping, the issue lifecycle, releases, performance and outage detection |
-| [First start and sign-in](docs/setup.md) | The setup code, the generated GitHub App, who may sign in, repositories, the setup guide |
-| [Deployment](docs/deployment.md) | Docker Compose, running behind an existing proxy, collectors on app servers, uptime checks |
-| [Sending telemetry](docs/sending-telemetry.md) | OpenTelemetry Collector config, structured logs, Sentry SDKs, Faro, Datadog and JSON logs |
+| [First start and sign-in](docs/setup.md) | The setup code, the generated GitHub App, who may sign in, repositories |
+| [Deployment](docs/deployment.md) | Docker Compose, behind an existing proxy, collectors, uptime checks, backups |
+| [Sending telemetry](docs/sending-telemetry.md) | OpenTelemetry Collector, structured logs, Sentry SDKs, Faro, Datadog and JSON logs |
 | [Tracing across services](docs/tracing.md) | How traces link up across OpenTelemetry, Sentry and browser SDKs |
 | [Dashboard](docs/dashboard.md) | Logs, traces, issues, dashboards, alarms, uptime, SLOs, webhooks |
-| [Automated fixes](docs/automated-fixes.md) | Claude Code in GitHub Actions or the fixer container, cross-repository fixes, "worth fixing?" investigations |
+| [Automated fixes](docs/automated-fixes.md) | Claude Code in GitHub Actions or the fixer container |
 | [Configuration](docs/configuration.md) | Every environment variable, AI providers |
 | [Development](docs/development.md) | Building, the UI dev server, tests, end-to-end check, code layout |
 
 ## Security
 
-- Ingest endpoints take a bearer token, which Sentinel generates for you. You
-  can replace it under *Settings → Access*, or set several in `INGEST_TOKEN`
-  to rotate them without downtime.
-- Dashboard sign-in goes through GitHub and **fails closed**: only the users
-  and organization allowed under *Settings → Access* get in, and you can't
-  save a list that locks yourself out. A fresh install can only be claimed by
-  someone who can read the server's log.
-- Redaction runs before storage, AI calls and GitHub. The model's prompt treats
-  all telemetry as untrusted data, and its output is redacted again, with
-  `@mentions` neutralized, before it is posted.
+- **Secrets never leave the box.** Tokens, passwords, API keys, JWTs and URL
+  credentials are redacted *before* anything is stored, sent to a model or
+  posted to GitHub.
+- **Sign-in fails closed.** Only the GitHub users and organization you allow
+  get in, and you can't save a list that locks yourself out. A fresh install
+  can only be claimed by someone who can read the server's log.
+- **Ingest needs a token**, which Sentinel generates. Several tokens can be set
+  to rotate without downtime.
+- The model's prompt treats all telemetry as untrusted data. Its output is
+  redacted again, with `@mentions` neutralized, before it is posted.
 - Webhook deliveries can be signed with HMAC-SHA256.
 
-If you find a vulnerability, please report it privately through
-[GitHub security advisories](https://github.com/weeklyvillain/sentinel/security/advisories/new)
-rather than in a public issue.
+Please report vulnerabilities privately through
+[GitHub security advisories](https://github.com/weeklyvillain/sentinel/security/advisories/new).
 
 ## Contributing
 
-Issues and pull requests are welcome. Run the tests before you open a PR:
-
-```bash
-go test ./... && go vet ./...
-```
-
-The built dashboard UI in `internal/web/dist` is committed, so `go build` works
-without Node. If you change `web/`, rebuild it with
+Issues and pull requests are welcome. Run `go test ./... && go vet ./...`
+before you open a PR. The built UI in `internal/web/dist` is committed, so
+`go build` works without Node. After changing `web/`, rebuild it with
 `npm --prefix web ci && npm --prefix web run build`. See
-[Development](docs/development.md) for the hot-reload dev server and the
-end-to-end check.
+[Development](docs/development.md) for the hot-reload dev server.
 
 ## License
 
-Sentinel is released under the [MIT License](LICENSE).
+[MIT](LICENSE)

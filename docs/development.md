@@ -13,14 +13,21 @@ ANTHROPIC_API_KEY=sk-ant-... ./bin/sentinel
 
 ## Local demo
 
-Try it locally without GitHub, sign-in or an AI key, with demo traffic:
+Try it locally without GitHub, sign-in or an AI key, with demo traffic. With
+Docker, one command builds and starts both:
 
 ```bash
-SENTINEL_HTTP_ADDR=127.0.0.1:8080 DRY_RUN=true DASHBOARD_AUTH=none AI_PROVIDER=none ./bin/sentinel
+docker compose -f deploy/docker-compose.demo.yml up --build
+```
+
+Or from source:
+
+```bash
+INGEST_TOKEN=demo SENTINEL_HTTP_ADDR=127.0.0.1:8080 DRY_RUN=true DASHBOARD_AUTH=none AI_PROVIDER=none ./bin/sentinel
 ```
 
 ```bash
-go run ./cmd/sentinel-demo -endpoint http://localhost:4318
+go run ./cmd/sentinel-demo -endpoint http://localhost:4318 -token demo
 ```
 
 Then open http://localhost:8080. `cmd/sentinel-demo` sends logs (with a

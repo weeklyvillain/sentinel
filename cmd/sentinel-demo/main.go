@@ -1,7 +1,10 @@
 // Command sentinel-demo sends synthetic OTLP/JSON logs, error spans and
 // metrics for a few fake services, so the dashboard has something to show.
 //
-//	go run ./cmd/sentinel-demo -endpoint http://localhost:4318 -duration 10m
+//	go run ./cmd/sentinel-demo -endpoint http://localhost:4318 -token <ingest token> -duration 10m
+//
+// The ingest token is on Settings → Access (or INGEST_TOKEN); it can also be
+// passed as SENTINEL_INGEST_TOKEN.
 //
 // "inventory" stops sending after -stop-after to demonstrate outage detection.
 package main
@@ -15,6 +18,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 )
@@ -42,11 +46,19 @@ func hexID(n int) string {
 
 func nanos(t time.Time) string { return strconv.FormatInt(t.UnixNano(), 10) }
 
-var endpoint string
+var endpoint, token string
 
 func post(path string, body any) {
 	b, _ := json.Marshal(body)
-	resp, err := http.Post(endpoint+path, "application/json", bytes.NewReader(b))
+	req, err := http.NewRequest(http.MethodPost, endpoint+path, bytes.NewReader(b))
+	if err != nil {
+		log.Fatalf("post %s: %v", path, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Printf("post %s: %v", path, err)
 		return
@@ -54,6 +66,9 @@ func post(path string, body any) {
 	resp.Body.Close()
 	if resp.StatusCode != 200 {
 		log.Printf("post %s: HTTP %d", path, resp.StatusCode)
+		if resp.StatusCode == http.StatusUnauthorized {
+			log.Fatal("Sentinel wants an ingest token: pass -token (see Settings → Access, or set INGEST_TOKEN on Sentinel)")
+		}
 	}
 }
 
@@ -234,6 +249,7 @@ func sendMetrics(svc, env string, c *counters, start, now time.Time, t float64) 
 
 func main() {
 	flag.StringVar(&endpoint, "endpoint", "http://localhost:4318", "OTLP/HTTP endpoint")
+	flag.StringVar(&token, "token", os.Getenv("SENTINEL_INGEST_TOKEN"), "ingest token (default $SENTINEL_INGEST_TOKEN)")
 	duration := flag.Duration("duration", 10*time.Minute, "how long to run (0 = forever)")
 	interval := flag.Duration("interval", 2*time.Second, "send interval")
 	stopAfter := flag.Duration("stop-after", 90*time.Second, "inventory stops sending after this (0 = never)")

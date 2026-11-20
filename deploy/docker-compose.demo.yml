@@ -1,0 +1,60 @@
+# Try Sentinel on your own machine in one command, with fake traffic:
+#
+#   docker compose -f deploy/docker-compose.demo.yml up --build
+#
+# then open http://localhost:8080. No GitHub, sign-in or AI key needed:
+# issues are only logged (DRY_RUN) and the dashboard has no sign-in, so this
+# is for your own machine only. Both ports are bound to 127.0.0.1.
+#
+# Your own apps can send to it too: OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+# and OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer demo".
+# Stop with Ctrl+C. `docker compose -f deploy/docker-compose.demo.yml down -v`
+# deletes the demo data.
+name: sentinel-demo
+
+services:
+  sentinel:
+    build:
+      context: ..
+    image: sentinel:latest
+    environment:
+      SENTINEL_DB: /data/sentinel.db
+      # Sentinel only runs without sign-in on a loopback address, so the
+      # dashboard listens on the container's 127.0.0.1 and the "web" service
+      # below forwards the published port to it.
+      SENTINEL_HTTP_ADDR: 127.0.0.1:8080
+      SENTINEL_OTLP_ADDR: :4318
+      INGEST_TOKEN: demo # send "Authorization: Bearer demo" from your own apps
+      PUBLIC_URL: http://localhost:8080
+      DASHBOARD_AUTH: none
+      DRY_RUN: "true"
+      AI_PROVIDER: none
+      SETTLE_WINDOW: 10s
+    ports:
+      - "127.0.0.1:8080:8081" # served by "web", which shares this network namespace
+      - "127.0.0.1:4318:4318"
+    volumes:
+      - demo-data:/data
+
+  web:
+    image: caddy:2.8
+    network_mode: service:sentinel
+    depends_on: [sentinel]
+    command: ["caddy", "reverse-proxy", "--from", ":8081", "--to", "127.0.0.1:8080"]
+
+  # Four fake services sending logs, traces and metrics, with two hours of
+  # backfilled history. "inventory" stops after 90s to show an outage, and
+  # checkout ships a slower release halfway through.
+  traffic:
+    image: sentinel:latest
+    pull_policy: never # built by the sentinel service above
+    depends_on:
+      sentinel:
+        condition: service_healthy
+    environment:
+      SENTINEL_INGEST_TOKEN: demo
+    entrypoint: ["/usr/local/bin/sentinel-demo"]
+    command: ["-endpoint", "http://sentinel:4318", "-duration", "0"]
+
+volumes:
+  demo-data:
