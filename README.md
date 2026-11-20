@@ -584,6 +584,21 @@ The model only writes the title, summary, likely cause and next steps. Its
 prompt marks all telemetry as untrusted data, and its output is redacted and
 has `@mentions` neutralized before it is posted.
 
+## Structured log lines (JSON and logfmt)
+
+Log lines whose body is a JSON object or **logfmt** (`key=value` pairs with
+quoted values, as Grafana Alloy, Loki, Prometheus, Go's slog text handler
+and logrus write) are read as fields:
+
+- When the record has no severity of its own, the line's `level=` (or
+  `"level"`, `severity`, `lvl`) sets it, so `level=error` lines count as
+  errors.
+- The issue for such an error is titled by its `msg`/`message`; the other
+  fields (`error`, ids, counts, timestamps) become its attributes, so lines
+  that differ only in those group together. The stored line is unchanged.
+- On the Logs page they show their message field (chosen per service, or
+  the usual names), and the log drawer lists every field.
+
 ## Sentry SDKs (drop-in)
 
 Apps that already use a Sentry SDK keep it: create a DSN for the service

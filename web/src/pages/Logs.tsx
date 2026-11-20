@@ -227,7 +227,11 @@ export default function Logs() {
                       {l.service}
                     </td>
                     <td className="body">
-                      {m.json && <span className="json-tag" title="JSON log line">{"{}"}</span>}
+                      {m.json && (
+                        <span className="json-tag" title={m.format === "logfmt" ? "logfmt log line" : "JSON log line"}>
+                          {m.format === "logfmt" ? "k=v" : "{}"}
+                        </span>
+                      )}
                       {m.text.length > 300 ? m.text.slice(0, 300) + "…" : m.text}
                     </td>
                   </tr>
