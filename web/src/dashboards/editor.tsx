@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { api, MetricSeriesInfo as MetricSeries, qs } from "../api";
 import { Icon, Modal, useAsync } from "../components/ui";
+import { aggNeedsField, LOG_AGGS } from "../logsearch";
 import { Panel, PanelQuery, PanelType, UNITS, Variable, VarValues } from "./model";
 import { PanelBody, ROW_PX, usePanelData } from "./panels";
 
@@ -348,19 +349,43 @@ function QueryRow({
           })}
         </div>
       ) : q.source === "logs" ? (
-        <div className="row" style={{ gap: 8 }}>
-          <input value={q.q ?? ""} onChange={(e) => onChange({ q: e.target.value })} placeholder='Search, e.g. timeout -"health"' style={{ flex: 1 }} />
-          <select value={q.min_severity ?? 0} onChange={(e) => onChange({ min_severity: Number(e.target.value) })}>
-            <option value={0}>All levels</option>
-            <option value={13}>Warn and up</option>
-            <option value={17}>Error and up</option>
-          </select>
-          <select value={q.split_by ?? ""} onChange={(e) => onChange({ split_by: e.target.value as never })}>
-            <option value="">One series</option>
-            <option value="level">By level</option>
-            <option value="service">By service</option>
-          </select>
-        </div>
+        <>
+          <div className="row" style={{ gap: 8 }}>
+            <input value={q.q ?? ""} onChange={(e) => onChange({ q: e.target.value })} placeholder="Search, e.g. level:error duration_ms>500 -healthcheck" style={{ flex: 1 }} aria-label="Log search" />
+            <select value={q.min_severity ?? 0} onChange={(e) => onChange({ min_severity: Number(e.target.value) })} aria-label="Minimum level">
+              <option value={0}>All levels</option>
+              <option value={13}>Warn and up</option>
+              <option value={17}>Error and up</option>
+            </select>
+          </div>
+          <div className="row" style={{ gap: 8, marginTop: 8 }}>
+            <select value={q.log_agg ?? "count"} onChange={(e) => onChange({ log_agg: e.target.value as never })} aria-label="Statistic">
+              {LOG_AGGS.map((a) => (
+                <option key={a.value} value={a.value}>
+                  {a.label}
+                </option>
+              ))}
+            </select>
+            {aggNeedsField(q.log_agg ?? "count") && (
+              <input className="mono" value={q.field ?? ""} onChange={(e) => onChange({ field: e.target.value })} placeholder="field, e.g. duration_ms" style={{ flex: 1 }} aria-label="Field" />
+            )}
+            <span className="small muted">split by</span>
+            <input
+              className="mono"
+              list={`log-split-${q.id}`}
+              value={q.split_by ?? ""}
+              onChange={(e) => onChange({ split_by: e.target.value })}
+              placeholder="nothing"
+              style={{ width: 140 }}
+              aria-label="Split by"
+            />
+            <datalist id={`log-split-${q.id}`}>
+              <option value="level" />
+              <option value="service" />
+              <option value="env" />
+            </datalist>
+          </div>
+        </>
       ) : (
         <>
           <div className="row" style={{ gap: 8 }}>

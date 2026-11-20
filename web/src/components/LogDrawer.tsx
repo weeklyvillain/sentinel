@@ -20,6 +20,9 @@ export interface LogDrawerProps {
   onSearch: (text: string) => void;
   onTrace?: () => void;
   onSameError?: () => void;
+  /** Extra columns shown in the log list; a field can be added or removed. */
+  columns?: string[];
+  onToggleColumn?: (field: string) => void;
 }
 
 export function LogDrawer(p: LogDrawerProps) {
@@ -64,6 +67,12 @@ export function LogDrawer(p: LogDrawerProps) {
       setBusy(false);
     }
   };
+  const colLink = (k: string) =>
+    p.onToggleColumn && (
+      <button className="link small" onClick={() => p.onToggleColumn!(k)} title={p.columns?.includes(k) ? `Remove the ${k} column` : `Show ${k} as a column in the list`}>
+        {p.columns?.includes(k) ? "✓ column" : "column"}
+      </button>
+    );
   const raw = msg.json && msg.format === "json" ? JSON.stringify(msg.json, null, 2) : log.body;
   const shown = find ? fields.filter(([k, v]) => (k + " " + valueText(v)).toLowerCase().includes(find.toLowerCase())) : fields;
 
@@ -161,6 +170,7 @@ export function LogDrawer(p: LogDrawerProps) {
                             search
                           </button>
                         )}
+                        {colLink(k)}
                       </span>
                     </div>
                   );
@@ -188,6 +198,7 @@ export function LogDrawer(p: LogDrawerProps) {
                         <button className="link small" onClick={() => p.onFilterAttr(k, v)}>
                           filter
                         </button>
+                        {colLink(k)}
                         {v.length < 200 && (
                           <Link className="small" to={`/traces${qs({ range: "24h", attr: `${k}=${v}` })}`} title="Traces with this value (last 24 hours)">
                             traces

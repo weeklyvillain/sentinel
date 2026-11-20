@@ -175,3 +175,74 @@ export function flatten(obj: JSONObject, prefix = "", out: [string, unknown][] =
   }
   return out;
 }
+
+// --- extra columns in the log list ---
+
+const BUILTIN_COLUMNS: Record<string, (l: LogRecordLike) => unknown> = {
+  env: (l) => l.env,
+  trace_id: (l) => l.trace_id,
+  span_id: (l) => l.span_id,
+  severity_text: (l) => l.severity_text,
+  severity: (l) => l.severity,
+  kind: (l) => l.kind,
+};
+
+interface LogRecordLike {
+  body: string;
+  attrs?: Record<string, string>;
+  env?: string;
+  trace_id?: string;
+  span_id?: string;
+  severity_text?: string;
+  severity: number;
+  kind: string;
+}
+
+// columnValue is a line's value for a column: an attribute, a field of a
+// JSON or logfmt body (dot paths reach nested fields), or a built-in field.
+export function columnValue(l: LogRecordLike, name: string): string {
+  const a = l.attrs?.[name];
+  if (a !== undefined) return a;
+  const s = parseStructured(l.body);
+  if (s) {
+    const v = getPath(s.obj, name);
+    if (v !== undefined) return valueText(v);
+  }
+  const b = BUILTIN_COLUMNS[name]?.(l);
+  return b === undefined || b === null ? "" : String(b);
+}
+
+// columnSuggestions lists the fields seen in these lines, most common first.
+export function columnSuggestions(lines: LogRecordLike[], limit = 300): string[] {
+  const n = new Map<string, number>();
+  const add = (k: string) => n.set(k, (n.get(k) ?? 0) + 1);
+  for (const l of lines.slice(0, 300)) {
+    for (const k of Object.keys(l.attrs ?? {})) add(k);
+    const s = parseStructured(l.body);
+    if (s) for (const [k] of flatten(s.obj)) add(k);
+    if (l.env) add("env");
+  }
+  return [...n.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, limit)
+    .map(([k]) => k);
+}
+
+const COLUMNS_KEY = "sentinel.logs.columns";
+
+export function rememberedColumns(): string[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(COLUMNS_KEY) ?? "[]");
+    return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export function rememberColumns(cols: string[]) {
+  try {
+    localStorage.setItem(COLUMNS_KEY, JSON.stringify(cols));
+  } catch {
+    // storage unavailable
+  }
+}

@@ -324,6 +324,13 @@ func logQuery(r *http.Request) store.LogQuery {
 	if v, err := strconv.Atoi(q.Get("min_severity")); err == nil {
 		lq.MinSeverity = int32(v)
 	}
+	for _, l := range q["level"] {
+		for _, p := range strings.Split(l, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				lq.Levels = append(lq.Levels, p)
+			}
+		}
+	}
 	for _, a := range q["attr"] {
 		if k, v, ok := strings.Cut(a, "="); ok && k != "" {
 			if lq.Attrs == nil {
