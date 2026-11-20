@@ -195,6 +195,10 @@ func janitor(ctx context.Context, st *store.Store, cfg config.Config, log *slog.
 		} else if n > 0 {
 			log.Info("retention prune", "deleted", n)
 		}
+		// Fixer runs: logs for 30 days, the runs (and their token counts) for a year.
+		if err := st.PruneFixerRuns(ctx, now.AddDate(0, 0, -30), now.AddDate(-1, 0, 0)); err != nil && ctx.Err() == nil {
+			log.Error("fixer run prune", "err", err)
+		}
 		if n, err := st.PruneTraces(ctx, now.Add(-cfg.TraceRetention)); err != nil && ctx.Err() == nil {
 			log.Error("trace retention prune", "err", err)
 		} else if n > 0 {

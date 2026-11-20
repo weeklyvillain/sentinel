@@ -6,9 +6,10 @@ import { CopyLink, Empty, ErrorNote, Icon, Loading, Modal, Seg, StatusBadge, use
 import { useServices } from "../shared";
 import { ago, fmtFull, fmtNum, fmtTime, LEVEL_COLORS, levelOf } from "../util";
 import { Queue } from "./AI";
+import { FixerRuns } from "./FixerRuns";
 
-type Tab = "active" | "pending" | "open" | "resolved" | "ignored" | "all" | "releases" | "queue";
-const TAB_STATUS: Record<Exclude<Tab, "queue" | "releases">, string> = { active: "open,pending", pending: "pending", open: "open", resolved: "resolved", ignored: "ignored", all: "" };
+type Tab = "active" | "pending" | "open" | "resolved" | "ignored" | "all" | "releases" | "queue" | "fixer";
+const TAB_STATUS: Record<Exclude<Tab, "queue" | "releases" | "fixer">, string> = { active: "open,pending", pending: "pending", open: "open", resolved: "resolved", ignored: "ignored", all: "" };
 
 const SORTS = [
   { value: "", label: "Last seen" },
@@ -20,7 +21,7 @@ const SORTS = [
 export default function Issues() {
   const [params, setParams] = useSearchParams();
   const tab = (params.get("tab") as Tab) ?? "active";
-  const listTab = tab !== "queue" && tab !== "releases";
+  const listTab = tab !== "queue" && tab !== "releases" && tab !== "fixer";
   const service = params.get("service") ?? "";
   const env = params.get("env") ?? "";
   const release = params.get("release") ?? "";
@@ -80,9 +81,10 @@ export default function Issues() {
               { value: "all", label: "All" },
               { value: "releases", label: "Releases" },
               { value: "queue", label: "AI queue" },
+              { value: "fixer", label: "Fixer" },
             ]}
           />
-          {tab !== "queue" && (
+          {tab !== "queue" && tab !== "fixer" && (
             <select value={service} onChange={(e) => set("service", e.target.value)} aria-label="Service">
               <option value="">All services</option>
               {(svcs.data ?? []).map((s) => (
@@ -132,6 +134,8 @@ export default function Issues() {
       </div>
       {tab === "queue" ? (
         <Queue />
+      ) : tab === "fixer" ? (
+        <FixerRuns />
       ) : tab === "releases" ? (
         <Releases releases={releases} onOpen={(r) => setParams(new URLSearchParams({ tab: "all", service: r.service, release: r.version, new: "1" }))} />
       ) : (

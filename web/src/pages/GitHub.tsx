@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api, GitHubStatus, Repo } from "../api";
 import { Empty, ErrorNote, Icon, Loading, Switch, useAsync, useAction, useToast } from "../components/ui";
 import { ago } from "../util";
@@ -161,7 +161,7 @@ interface FixerStatus {
   auth?: "subscription" | "api_key";
   auth_from?: "dashboard" | "fixer";
   needs_sign_in?: boolean;
-  working?: { id: number; kind?: string; repo: string; issue: number; since: string };
+  working?: { id: number; kind?: string; repo: string; issue: number; since: string; run_id?: number };
   last_error?: string;
 }
 
@@ -281,6 +281,13 @@ function FixerCard({ d, onSaved }: { d: AutofixInfo; onSaved: () => void }) {
               ? `investigating an error${f.working.repo ? ` in ${f.working.repo}` : ""}, since ${ago(f.working.since)}`
               : `fixing ${f.working.repo}#${f.working.issue}, since ${ago(f.working.since)}`
             : "nothing"}
+          {f.working?.run_id ? (
+            <>
+              {" · "}
+              <Link to={`/issues?tab=fixer&run=${f.working.run_id}`}>watch the log</Link>
+            </>
+          ) : null}{" "}
+          · <Link to="/issues?tab=fixer">all runs</Link>
         </span>
         {f.last_error && (
           <>

@@ -5,6 +5,8 @@
 // when it is not set), works on it and reports the result.
 package fixjob
 
+import "time"
+
 // Job kinds.
 const (
 	KindFix     = "fix"     // fix the error and open a pull request
@@ -42,6 +44,58 @@ type Job struct {
 	// Model is the Claude model set in the dashboard for this kind of job;
 	// empty uses the fixer's FIXER_MODEL / FIXER_ANALYZE_MODEL.
 	Model string `json:"model,omitempty"`
+	// RunID is Sentinel's record of this attempt: the fixer sends its log
+	// to /fixer/runs/{RunID}/log and the result names it.
+	RunID int64 `json:"run_id,omitempty"`
+}
+
+// Log line kinds: the fixer's own steps and Claude Code's.
+const (
+	LogStep       = "step"        // the fixer: cloning, pushing, …
+	LogError      = "error"       // the fixer: something failed
+	LogText       = "text"        // Claude: what it says
+	LogTool       = "tool"        // Claude: a tool call (name and input)
+	LogToolResult = "tool_result" // Claude: what the tool returned
+	LogToolError  = "tool_error"  // Claude: a tool call that failed
+)
+
+// LogLine is one step of a run.
+type LogLine struct {
+	At   time.Time `json:"at"`
+	Kind string    `json:"kind"`
+	Text string    `json:"text"`
+}
+
+// LogBatch is what the fixer posts to /fixer/runs/{id}/log.
+type LogBatch struct {
+	Lines []LogLine `json:"lines"`
+}
+
+// Usage is what Claude Code reported for a run (from its result message).
+// With a subscription CostUSD is what the run would have cost on the API.
+type Usage struct {
+	Model            string  `json:"model,omitempty"`
+	Turns            int     `json:"turns"`
+	DurationMS       int64   `json:"duration_ms"`
+	InputTokens      int64   `json:"input_tokens"`
+	OutputTokens     int64   `json:"output_tokens"`
+	CacheReadTokens  int64   `json:"cache_read_tokens"`
+	CacheWriteTokens int64   `json:"cache_write_tokens"`
+	CostUSD          float64 `json:"cost_usd"`
+}
+
+// Add sums two runs of Claude Code (a job can run it more than once).
+func (u *Usage) Add(o Usage) {
+	if o.Model != "" {
+		u.Model = o.Model
+	}
+	u.Turns += o.Turns
+	u.DurationMS += o.DurationMS
+	u.InputTokens += o.InputTokens
+	u.OutputTokens += o.OutputTokens
+	u.CacheReadTokens += o.CacheReadTokens
+	u.CacheWriteTokens += o.CacheWriteTokens
+	u.CostUSD += o.CostUSD
 }
 
 // Claude Code sign-in kinds.
@@ -100,6 +154,9 @@ type Result struct {
 	// Analysis answers an "analyze" job (with AnalysisID).
 	AnalysisID int64     `json:"analysis_id,omitempty"`
 	Analysis   *Analysis `json:"analysis,omitempty"`
+	// RunID echoes Job.RunID; Usage is what Claude Code used.
+	RunID int64  `json:"run_id,omitempty"`
+	Usage *Usage `json:"usage,omitempty"`
 }
 
 // Hello is what the fixer says about itself when it asks for work.

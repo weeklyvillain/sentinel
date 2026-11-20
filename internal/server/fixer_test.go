@@ -3,9 +3,12 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -163,5 +166,68 @@ func TestEnsureFixerToken(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(file); strings.TrimSpace(string(b)) != "from-env-0123456789" {
 		t.Fatalf("file not updated: %q", b)
+	}
+}
+
+// Every claimed job is a run: the fixer's log and usage end up in it, and
+// the dashboard lists it with totals.
+func TestFixerRunsAPI(t *testing.T) {
+	h := newHarness(t, AuthConfig{Mode: "none"}, "")
+	ops := &fakeFixOps{jobs: []*fixjob.Job{{ID: 5, Attempt: 1, Repo: "acme/app", IssueNumber: 9, Token: "repo-token"}}}
+	h.s.Groups, h.s.FixerToken = ops, "0123456789abcdef0123"
+	post := func(path, body string) (int, string) {
+		req, _ := http.NewRequest(http.MethodPost, h.srv.URL+path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+h.s.FixerToken)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b := new(strings.Builder)
+		io.Copy(b, resp.Body)
+		return resp.StatusCode, b.String()
+	}
+	code, body := post("/fixer/claim", `{"version":"1","auth":"api_key"}`)
+	var job fixjob.Job
+	json.Unmarshal([]byte(body), &job)
+	if code != http.StatusOK || job.RunID == 0 || h.s.fixer.snapshot().Working.RunID != job.RunID {
+		t.Fatalf("claim: %d %s", code, body)
+	}
+	run := "/fixer/runs/" + strconv.FormatInt(job.RunID, 10)
+	if code, body := post(run+"/log", `{"lines":[{"kind":"step","text":"Cloning acme/app"},{"kind":"tool","text":"Read calc.go"}]}`); code != http.StatusOK {
+		t.Fatalf("log: %d %s", code, body)
+	}
+	// Live: the dashboard sees the run while it works.
+	resp, body := h.do(http.MethodGet, "/api/fixer/runs/"+strconv.FormatInt(job.RunID, 10), "", false)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"status":"running"`) || !strings.Contains(body, "Read calc.go") {
+		t.Fatalf("running run: %d %s", resp.StatusCode, body)
+	}
+	res := fmt.Sprintf(`{"attempt":1,"status":"pr","pr_url":"https://github.com/acme/app/pull/3","summary":"guarded it","run_id":%d,
+		"usage":{"model":"claude-sonnet-5-5","turns":7,"duration_ms":60000,"input_tokens":12,"output_tokens":3400,"cache_read_tokens":81000,"cache_write_tokens":9000,"cost_usd":0.31}}`, job.RunID)
+	if code, body := post("/fixer/jobs/5/result", res); code != http.StatusOK {
+		t.Fatalf("result: %d %s", code, body)
+	}
+	if code, _ := post(run+"/log", `{"lines":[{"kind":"step","text":"late"}]}`); code != http.StatusNotFound {
+		t.Fatalf("log after the result: %d", code)
+	}
+	resp, body = h.do(http.MethodGet, "/api/fixer/runs?kind=fix", "", false)
+	var list struct {
+		Runs  []store.FixerRun            `json:"runs"`
+		Stats map[string]store.FixerStats `json:"stats"`
+	}
+	json.Unmarshal([]byte(body), &list)
+	if resp.StatusCode != http.StatusOK || len(list.Runs) != 1 {
+		t.Fatalf("list: %d %s", resp.StatusCode, body)
+	}
+	r := list.Runs[0]
+	if r.Status != "pr" || r.Auth != "api_key" || r.Model != "claude-sonnet-5-5" || r.OutputTokens != 3400 || r.PRURL == "" || r.LogLines != 2 {
+		t.Fatalf("run: %+v", r)
+	}
+	if st := list.Stats["24h"]; st.Runs != 1 || st.Fixes != 1 || st.CacheReadTokens != 81000 || st.CostUSD != 0.31 {
+		t.Fatalf("stats: %+v", list.Stats)
+	}
+	// The fixer's routes and the dashboard's are separate.
+	if resp, _ := h.do(http.MethodPost, run+"/log", `{"lines":[]}`, true); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("dashboard session on the fixer log route: %d", resp.StatusCode)
 	}
 }
