@@ -27,15 +27,14 @@ export default function AI() {
   return (
     <>
       <div className="page-head">
-        <h1>AI analysis</h1>
         <span className="sub">
           Before an error group becomes a GitHub issue, a model writes its title and analysis. Jobs run one at a time in the background; an
-          issue is filed when its analysis is done. If it fails, the issue uses the built-in template.
+          issue is filed when its analysis is done. If it fails, the issue uses the built-in template. Jobs are listed under{" "}
+          <Link to="/issues?tab=queue">Issues → AI queue</Link>.
         </span>
       </div>
       <ErrorNote error={state.error} />
       {!state.data ? <Loading /> : <SettingsCard state={state.data} onSaved={state.reload} />}
-      <Queue />
     </>
   );
 }
@@ -296,7 +295,7 @@ function StatusBadge({ s }: { s: Analysis["status"] }) {
   );
 }
 
-function Queue() {
+export function Queue() {
   const toast = useToast();
   const list = useAsync(() => api.get<Analysis[]>("/api/analyses"), [], 3000);
   const [now, setNow] = useState(Date.now());
@@ -318,10 +317,10 @@ function Queue() {
 
   return (
     <>
-      <div className="page-head" style={{ marginTop: 24 }}>
-        <h2 style={{ margin: 0 }}>Analysis queue</h2>
-        <span className="sub">{waiting ? `${waiting} waiting.` : "Nothing waiting."} Outages skip the queue and are filed immediately.</span>
-      </div>
+      <p className="small muted" style={{ margin: "0 0 12px" }}>
+        {waiting ? `${waiting} waiting.` : "Nothing waiting."} Before an error group is filed, a model writes its title and analysis, one job at a time.
+        Outages skip the queue and are filed immediately. Provider and model are set under <Link to="/settings/ai">Settings → AI</Link>.
+      </p>
       <ErrorNote error={list.error} />
       <div className="card flush">
         {!list.data ? (

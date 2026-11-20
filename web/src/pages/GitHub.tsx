@@ -59,7 +59,6 @@ export default function GitHub() {
   return (
     <>
       <div className="page-head">
-        <h1>GitHub</h1>
         <span className="sub">Connect the Sentinel GitHub App and choose which repositories it may file issues in.</span>
         {d.mode === "app" && (
           <div className="actions">

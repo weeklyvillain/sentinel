@@ -55,7 +55,7 @@ export default function Overview() {
               {data.firing_alarms.map((a, i) => (
                 <span key={a.id}>
                   {i > 0 && ", "}
-                  <Link to="/alarms">{a.name}</Link> ({fmtNum(a.last_value)})
+                  <Link to="/alerts/alarms">{a.name}</Link> ({fmtNum(a.last_value)})
                 </span>
               ))}
             </div>
@@ -130,7 +130,7 @@ export default function Overview() {
               <div className="card-head" style={{ padding: "14px 16px 0" }}>
                 <h2>Services</h2>
                 <div className="right">
-                  <Link to="/services">Manage →</Link>
+                  <Link to="/settings/services">Manage →</Link>
                 </div>
               </div>
               {data.service_list.length === 0 ? (

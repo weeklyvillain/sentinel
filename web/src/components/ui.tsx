@@ -1,4 +1,5 @@
 import { createContext, ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { Navigate, NavLink, useLocation, useParams } from "react-router-dom";
 import { RANGES } from "../util";
 import type { GroupStatus } from "../api";
 
@@ -140,6 +141,42 @@ export function Seg<T extends string>({ value, options, onChange }: { value: T; 
   );
 }
 
+/** A page made of tabs, one per sub-page, routed as `${base}/${tab.path}`. */
+export interface SectionTab {
+  path: string;
+  label: string;
+  element: ReactNode;
+  count?: number;
+}
+
+export function Section({ title, base, tabs }: { title: string; base: string; tabs: SectionTab[] }) {
+  const { tab } = useParams();
+  const current = tabs.find((t) => t.path === tab);
+  if (!current) return <Navigate to={`${base}/${tabs[0].path}`} replace />;
+  return (
+    <>
+      <div className="page-head section-head">
+        <h1>{title}</h1>
+      </div>
+      <nav className="tabs" aria-label={title}>
+        {tabs.map((t) => (
+          <NavLink key={t.path} to={`${base}/${t.path}`}>
+            {t.label}
+            {t.count ? <span className="count">{t.count}</span> : null}
+          </NavLink>
+        ))}
+      </nav>
+      {current.element}
+    </>
+  );
+}
+
+/** Redirects an old URL to its new place, keeping the query string. */
+export function Moved({ to }: { to: string }) {
+  const { search } = useLocation();
+  return <Navigate to={to + search} replace />;
+}
+
 export function StatusBadge({ status }: { status: GroupStatus }) {
   const cls = { pending: "warn", open: "bad", resolved: "ok", ignored: "" }[status];
   return <span className={"badge " + cls}>{status}</span>;
@@ -174,6 +211,7 @@ export const Icon = {
   search: I("M21 21l-4.35-4.35M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z"),
   uptime: I("M22 12h-4l-3 9L9 3l-3 9H2"),
   dashboards: I("M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z"),
+  settings: I("M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"),
   ai: I("M12 3l1.9 5.8L20 10l-6.1 1.2L12 17l-1.9-5.8L4 10l6.1-1.2zM19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"),
 };
 

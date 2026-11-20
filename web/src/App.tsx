@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect } from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
 import { api, Alarm, Analysis, Check, Me } from "./api";
-import { Icon, Loading, Logo, useAsync } from "./components/ui";
+import { Icon, Loading, Logo, Moved, Section, SectionTab, useAsync } from "./components/ui";
 import Overview from "./pages/Overview";
 import Logs from "./pages/Logs";
 import Issues, { IssueDetail } from "./pages/Issues";
@@ -69,15 +69,21 @@ function Shell() {
   const nav = [
     { to: "/", label: "Overview", icon: Icon.overview, end: true },
     { to: "/logs", label: "Logs", icon: Icon.logs },
-    { to: "/issues", label: "Issues", icon: Icon.issues },
+    { to: "/issues", label: "Issues", icon: Icon.issues, count: analyzing },
     { to: "/dashboards", label: "Dashboards", icon: Icon.dashboards },
     { to: "/metrics", label: "Metrics", icon: Icon.metrics },
-    { to: "/services", label: "Services", icon: Icon.services },
-    { to: "/uptime", label: "Uptime", icon: Icon.uptime, count: checksDown },
-    { to: "/alarms", label: "Alarms", icon: Icon.alarms, count: firing },
-    { to: "/webhooks", label: "Webhooks", icon: Icon.webhooks },
-    { to: "/ai", label: "AI", icon: Icon.ai, count: analyzing },
-    { to: "/github", label: "GitHub", icon: Icon.github },
+    { to: "/alerts", label: "Alerts", icon: Icon.alarms, count: firing + checksDown },
+    { to: "/settings", label: "Settings", icon: Icon.settings },
+  ];
+  const alertTabs: SectionTab[] = [
+    { path: "alarms", label: "Alarms", element: <Alarms />, count: firing },
+    { path: "uptime", label: "Uptime", element: <Uptime />, count: checksDown },
+  ];
+  const settingsTabs: SectionTab[] = [
+    { path: "services", label: "Services", element: <Services /> },
+    { path: "github", label: "GitHub", element: <GitHub /> },
+    { path: "webhooks", label: "Webhooks", element: <Webhooks /> },
+    { path: "ai", label: "AI", element: <AI /> },
   ];
   const logout = async () => {
     await api.post("/auth/logout");
@@ -119,12 +125,15 @@ function Shell() {
           <Route path="/dashboards" element={<Dashboards />} />
           <Route path="/dashboards/:id" element={<DashboardView />} />
           <Route path="/metrics" element={<Metrics />} />
-          <Route path="/services" element={<Services />} />
-          <Route path="/uptime" element={<Uptime />} />
-          <Route path="/alarms" element={<Alarms />} />
-          <Route path="/webhooks" element={<Webhooks />} />
-          <Route path="/ai" element={<AI />} />
-          <Route path="/github" element={<GitHub />} />
+          <Route path="/alerts/:tab?" element={<Section title="Alerts" base="/alerts" tabs={alertTabs} />} />
+          <Route path="/settings/:tab?" element={<Section title="Settings" base="/settings" tabs={settingsTabs} />} />
+          {/* Old addresses, kept working for bookmarks and links in issues. */}
+          <Route path="/alarms" element={<Moved to="/alerts/alarms" />} />
+          <Route path="/uptime" element={<Moved to="/alerts/uptime" />} />
+          <Route path="/services" element={<Moved to="/settings/services" />} />
+          <Route path="/github" element={<Moved to="/settings/github" />} />
+          <Route path="/webhooks" element={<Moved to="/settings/webhooks" />} />
+          <Route path="/ai" element={<Moved to="/settings/ai" />} />
           <Route path="*" element={<div className="empty">Page not found</div>} />
         </Routes>
       </main>

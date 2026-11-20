@@ -43,8 +43,7 @@ export default function Webhooks() {
   return (
     <>
       <div className="page-head">
-        <h1>Webhooks</h1>
-        <span className="sub">Push issue and outage events to Slack, Discord or any HTTP endpoint. Alarms pick their webhooks on the Alarms page.</span>
+        <span className="sub">Push issue and outage events to Slack, Discord or any HTTP endpoint. Each alarm picks its own webhooks under Alerts → Alarms.</span>
         <div className="actions">
           <button className="primary" onClick={() => setEditing({})}>
             + New webhook

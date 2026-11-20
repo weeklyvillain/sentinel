@@ -121,7 +121,7 @@ export interface Service {
   description?: string;
   /** File GitHub issues for this service. */
   issues: boolean;
-  /** Flag the service as down when it goes quiet (added on the Uptime page). */
+  /** Flag the service as down when it goes quiet (added under Alerts → Uptime). */
   watch: boolean;
   active_groups?: number;
 }

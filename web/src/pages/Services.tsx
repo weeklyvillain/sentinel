@@ -36,7 +36,6 @@ export default function Services() {
   return (
     <>
       <div className="page-head">
-        <h1>Services</h1>
         <span className="sub">Services appear automatically when they send telemetry; add one to route its issues ahead of time.</span>
         <div className="actions">
           <button className="primary" onClick={() => setEditing({})}>
@@ -83,7 +82,7 @@ export default function Services() {
                     </td>
                     <td>
                       {st === "up" && !s.watch && (
-                        <span className="badge" title="Not watched for silence. Add it under Uptime → Watched services to be alerted when it stops sending.">
+                        <span className="badge" title="Not watched for silence. Add it under Alerts → Uptime → Watched services to be alerted when it stops sending.">
                           sending
                         </span>
                       )}
@@ -126,7 +125,7 @@ export default function Services() {
         )}
       </div>
       <p className="small faint">
-        A service is flagged down after {me.info.down_after} without logs, traces or metrics. Repositories must be authorized on the <Link to="/github">GitHub</Link> page.
+        A service is flagged down after {me.info.down_after} without logs, traces or metrics. Repositories must be authorized on the <Link to="/settings/github">GitHub</Link> settings.
       </p>
       {editing && (
         <ServiceForm
@@ -206,7 +205,7 @@ function ServiceForm(props: { initial: Partial<Service>; gh?: GitHubStatus; onCl
         )}
         {appMode && allowed.length === 0 && (
           <span className="help">
-            No repositories authorized yet — allow some on the <Link to="/github">GitHub</Link> page.
+            No repositories authorized yet — allow some on the <Link to="/settings/github">GitHub</Link> settings.
           </span>
         )}
       </label>
