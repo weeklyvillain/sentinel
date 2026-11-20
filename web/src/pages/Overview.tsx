@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, Overview as OverviewT, Status } from "../api";
 import { useStatus } from "../shared";
 import { bucketKeys, Legend, StackedBars } from "../components/charts";
-import { Empty, ErrorNote, Loading, RangePicker, Stat, StatusBadge, useAsync } from "../components/ui";
+import { Empty, ErrorNote, Icon, Loading, RangePicker, Stat, StatusBadge, useAsync } from "../components/ui";
 import { ago, fmtNum, LEVEL_COLORS, serviceUp } from "../util";
 
 const LEVELS = ["debug", "info", "warn", "error", "fatal"];
@@ -100,10 +100,10 @@ export default function Overview() {
 
           <div className="grid two">
             <div className="card flush">
-              <div className="card-head" style={{ padding: "14px 16px 0" }}>
+              <div className="card-head" style={{ padding: "12px 16px", margin: 0, borderBottom: "1px solid var(--border)" }}>
                 <h2>Recent issues</h2>
                 <div className="right">
-                  <Link to="/issues">All issues →</Link>
+                  <Link to="/issues">All issues</Link>
                 </div>
               </div>
               {data.recent_groups.length === 0 ? (
@@ -130,10 +130,10 @@ export default function Overview() {
               )}
             </div>
             <div className="card flush">
-              <div className="card-head" style={{ padding: "14px 16px 0" }}>
+              <div className="card-head" style={{ padding: "12px 16px", margin: 0, borderBottom: "1px solid var(--border)" }}>
                 <h2>Services</h2>
                 <div className="right">
-                  <Link to="/settings/services">Manage →</Link>
+                  <Link to="/settings/services">Manage</Link>
                 </div>
               </div>
               {data.service_list.length === 0 ? (
@@ -211,7 +211,7 @@ function SetupChecklist({ setup }: { setup: Status["setup"] }) {
         {SETUP_STEPS.map((s) => (
           <li key={s.key} className={setup[s.key] ? "done" : ""}>
             <span className="check-mark" aria-hidden>
-              {setup[s.key] ? "✓" : ""}
+              {setup[s.key] ? <Icon.check /> : null}
             </span>
             <div>
               {setup[s.key] ? <span>{s.title}</span> : <Link to={s.to}>{s.title}</Link>}

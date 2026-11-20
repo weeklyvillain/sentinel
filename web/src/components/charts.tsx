@@ -6,8 +6,9 @@ const axis = { stroke: "var(--faint)", fontSize: 11, tickLine: false, axisLine: 
 
 function tooltipStyle() {
   return {
-    contentStyle: { background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12, color: "var(--text)" },
+    contentStyle: { background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 6, fontSize: 12, color: "var(--text)", boxShadow: "var(--pop-shadow)", padding: "8px 10px" },
     labelStyle: { color: "var(--muted)", marginBottom: 4 },
+    itemStyle: { color: "var(--text)", padding: 0 },
     cursor: { fill: "var(--panel-2)" },
   };
 }
@@ -36,7 +37,7 @@ export function StackedBars(props: {
         <YAxis {...axis} allowDecimals={false} tickFormatter={(v) => fmtNum(v)} width={48} />
         <Tooltip {...tooltipStyle()} labelFormatter={(t) => fmtTime(String(t))} formatter={(v: number, n: string) => [fmtNum(v), n]} />
         {props.keys.map((k) => (
-          <Bar key={k} dataKey={k} stackId="a" fill={props.colors?.[k] ?? colorFor(k, props.keys)} isAnimationActive={false} />
+          <Bar key={k} dataKey={k} stackId="a" fill={props.colors?.[k] ?? colorFor(k, props.keys)} stroke="var(--panel)" strokeWidth={1} isAnimationActive={false} />
         ))}
       </BarChart>
     </ResponsiveContainer>
@@ -71,8 +72,8 @@ export function SeriesChart(props: { series: Series[]; bucketMs: number; unit?: 
         <AreaChart {...common}>
           <defs>
             <linearGradient id={"g-" + labels[0].replace(/\W/g, "")} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={c} stopOpacity={0.35} />
-              <stop offset="100%" stopColor={c} stopOpacity={0.02} />
+              <stop offset="0%" stopColor={c} stopOpacity={0.18} />
+              <stop offset="100%" stopColor={c} stopOpacity={0} />
             </linearGradient>
           </defs>
           {children}

@@ -14,16 +14,27 @@ export function levelOf(sev: number): "debug" | "info" | "warn" | "error" | "fat
   return "debug";
 }
 
+// Chart fills per log level. They are CSS variables (styles.css) so light
+// and dark mode each get their own validated steps.
 export const LEVEL_COLORS: Record<string, string> = {
-  debug: "#9aa3b2",
-  info: "#6b74e8",
-  warn: "#e0a030",
-  error: "#e05252",
-  fatal: "#9b5de5",
+  debug: "var(--lvl-debug)",
+  info: "var(--s1)",
+  warn: "var(--lvl-warn)",
+  error: "var(--lvl-error)",
+  fatal: "var(--lvl-fatal)",
 };
 
-// Categorical palette for services / series.
-export const PALETTE = ["#6366f1", "#14b8a6", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4", "#84cc16", "#ec4899", "#f97316", "#64748b"];
+// Text colour per level: text keeps text tokens, never the series fill.
+export const LEVEL_TEXT: Record<string, string> = {
+  debug: "var(--faint)",
+  info: "var(--muted)",
+  warn: "var(--warn)",
+  error: "var(--bad)",
+  fatal: "var(--bad)",
+};
+
+// Categorical palette for services / series, in its validated fixed order.
+export const PALETTE = ["var(--s1)", "var(--s2)", "var(--s3)", "var(--s4)", "var(--s5)", "var(--s6)", "var(--s7)", "var(--s8)"];
 
 export function colorFor(key: string, keys: string[]): string {
   const i = keys.indexOf(key);

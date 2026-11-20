@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
-import { ErrorNote, Loading, useAction, useAsync } from "../components/ui";
+import { ErrorNote, Icon, Loading, useAction, useAsync } from "../components/ui";
 
 // The setup guide: every step of getting Sentinel working, checked against
 // what is configured, one after the other.
@@ -61,7 +61,7 @@ export default function Setup() {
         {steps.map((s, i) => (
           <li key={s.id} className={"card setup-step " + (s.skipped ? "skipped" : s.state) + (shown === s.id ? " open" : "")}>
             <button className="setup-head" onClick={() => setOpen(shown === s.id ? "" : s.id)} aria-expanded={shown === s.id}>
-              <span className="setup-num">{s.state === "done" ? "✓" : s.state === "warn" ? "!" : i + 1}</span>
+              <span className="setup-num">{s.state === "done" ? <Icon.check /> : s.state === "warn" ? "!" : i + 1}</span>
               <span className="setup-title">
                 {s.title}
                 {s.optional && <span className="badge">optional</span>}

@@ -185,7 +185,7 @@ function CheckDetail({ c }: { c: Check }) {
         <div className="card">
           <h3>Failed probes</h3>
           {hasFailures ? (
-            <StackedBars buckets={failures} keys={["failures"]} colors={{ failures: "#e05252" }} bucketMs={d.data.bucket_ms} height={150} />
+            <StackedBars buckets={failures} keys={["failures"]} colors={{ failures: "var(--lvl-error)" }} bucketMs={d.data.bucket_ms} height={150} />
           ) : (
             <Empty title="No failures in this range" />
           )}

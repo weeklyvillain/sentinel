@@ -73,7 +73,7 @@ function WStep(props: { n: number; title: string; state: "done" | "now" | "later
   return (
     <li className={"welcome-step " + props.state}>
       <div className="welcome-head">
-        <span className="setup-num">{props.state === "done" ? "✓" : props.n}</span>
+        <span className="setup-num">{props.state === "done" ? <Icon.check /> : props.n}</span>
         <strong>{props.title}</strong>
       </div>
       {props.state === "now" && <div className="welcome-body">{props.children}</div>}

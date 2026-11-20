@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { api, MetricSeriesInfo as MetricSeries, qs } from "../api";
-import { Modal, useAsync } from "../components/ui";
+import { Icon, Modal, useAsync } from "../components/ui";
 import { Panel, PanelQuery, PanelType, UNITS, Variable, VarValues } from "./model";
 import { PanelBody, ROW_PX, usePanelData } from "./panels";
 
@@ -322,8 +322,8 @@ function QueryRow({
           <input type="checkbox" checked={!!q.hidden} onChange={(e) => onChange({ hidden: e.target.checked })} /> hide
         </label>
         {onRemove && (
-          <button className="small ghost" onClick={onRemove} aria-label={`Remove query ${q.id}`}>
-            ✕
+          <button className="small ghost icon" onClick={onRemove} aria-label={`Remove query ${q.id}`}>
+            <Icon.x />
           </button>
         )}
       </div>
@@ -430,8 +430,8 @@ function QueryRow({
                     <option key={v} value={v} />
                   ))}
                 </datalist>
-                <button className="small ghost" onClick={() => onChange({ filters: filters.filter((_, j) => j !== i) })} aria-label="Remove filter">
-                  ✕
+                <button className="small ghost icon" onClick={() => onChange({ filters: filters.filter((_, j) => j !== i) })} aria-label="Remove filter">
+                  <Icon.x />
                 </button>
               </div>
             );

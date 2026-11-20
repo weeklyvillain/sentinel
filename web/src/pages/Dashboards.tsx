@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Annotation, api, MetricSeriesInfo, qs } from "../api";
-import { CopyLink, Empty, ErrorNote, Loading, Modal, pageRange, RangeLabel, RangePicker, rangeParams, useAsync, useAction } from "../components/ui";
+import { CopyLink, Empty, ErrorNote, Icon, Loading, Modal, pageRange, RangeLabel, RangePicker, rangeParams, useAsync, useAction } from "../components/ui";
 import { PanelEditor } from "../dashboards/editor";
 import { dashVariables, DashSpec, newId, Panel, TEMPLATES, usesServiceVar, Variable, VarValues } from "../dashboards/model";
 import { PanelBody, ROW_PX, usePanelData } from "../dashboards/panels";
@@ -279,8 +279,8 @@ function VariablesEditor({ initial, onSave, onClose }: { initial: Variable[]; on
             <label className="check small">
               <input type="checkbox" checked={!!v.multi} onChange={(e) => set(i, { multi: e.target.checked })} /> several values
             </label>
-            <button className="small ghost" onClick={() => setVars(vars.filter((_, j) => j !== i))} aria-label="Remove variable">
-              ✕
+            <button className="small ghost icon" onClick={() => setVars(vars.filter((_, j) => j !== i))} aria-label="Remove variable">
+              <Icon.x />
             </button>
           </div>
           {v.kind === "attr" && (
@@ -481,7 +481,7 @@ export function DashboardView() {
           ))}
         </div>
       )}
-      {edit && <div className="notice" style={{ marginBottom: 12 }}>Editing: drag panels to reorder, use ✎ to change one. Save when done.</div>}
+      {edit && <div className="notice" style={{ marginBottom: 12 }}>Editing: drag panels to reorder, use the pencil to change one. Save when done.</div>}
       {panels.length === 0 ? (
         <div className="card">
           <Empty title="This dashboard is empty">{edit ? "Add a panel to start." : "Press Edit, then Add panel."}</Empty>
@@ -504,11 +504,11 @@ export function DashboardView() {
                 </button>
                 {edit && (
                   <span className="panel-tools">
-                    <button className="small ghost" onClick={() => setEditing(p)} title="Edit row" aria-label="Edit row">
-                      ✎
+                    <button className="small ghost icon" onClick={() => setEditing(p)} title="Edit row" aria-label="Edit row">
+                      <Icon.edit />
                     </button>
-                    <button className="small ghost" onClick={() => setPanels(panels.filter((x) => x.id !== p.id))} title="Remove row (keeps its panels)" aria-label="Remove row">
-                      ✕
+                    <button className="small ghost icon" onClick={() => setPanels(panels.filter((x) => x.id !== p.id))} title="Remove row (keeps its panels)" aria-label="Remove row">
+                      <Icon.x />
                     </button>
                   </span>
                 )}
@@ -579,14 +579,14 @@ function PanelCard(props: {
           {loading && <span className="dot warn" title="Loading" />}
           {props.edit && (
             <span className="panel-tools">
-              <button className="small ghost" onClick={props.onEdit} title="Edit panel" aria-label="Edit panel">
-                ✎
+              <button className="small ghost icon" onClick={props.onEdit} title="Edit panel" aria-label="Edit panel">
+                <Icon.edit />
               </button>
               <button className="small ghost" onClick={props.onDuplicate} title="Duplicate panel" aria-label="Duplicate panel">
                 ⧉
               </button>
-              <button className="small ghost" onClick={props.onRemove} title="Remove panel" aria-label="Remove panel">
-                ✕
+              <button className="small ghost icon" onClick={props.onRemove} title="Remove panel" aria-label="Remove panel">
+                <Icon.x />
               </button>
             </span>
           )}

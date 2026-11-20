@@ -185,7 +185,7 @@ function FixerCard({ d, onSaved }: { d: AutofixInfo; onSaved: () => void }) {
       <div className="card-head">
         <h2>Sentinel's fixer</h2>
         <div className="right">
-          {f.connected ? <span className="badge ok">● connected</span> : <span className="badge bad">not connected</span>}
+          {f.connected ? <span className="badge ok">connected</span> : <span className="badge bad">not connected</span>}
         </div>
       </div>
       <p className="small muted">

@@ -2,9 +2,9 @@ import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, LogRecord, OpStats, qs, Series, Span, TraceSummary } from "../api";
 import { SeriesChart } from "../components/charts";
-import { CopyLink, Empty, ErrorNote, Loading, RangePicker, Seg, useAsync } from "../components/ui";
+import { CopyLink, Empty, ErrorNote, Icon, Loading, RangePicker, Seg, useAsync } from "../components/ui";
 import { useServices } from "../shared";
-import { colorFor, fmtFull, fmtNum, fmtTime, LEVEL_COLORS, levelOf } from "../util";
+import { colorFor, fmtFull, fmtNum, fmtTime, LEVEL_TEXT, levelOf } from "../util";
 
 /** Formats microseconds. */
 export function fmtUS(us: number): string {
@@ -452,8 +452,8 @@ export function TraceView() {
                   <h2 className="truncate" title={selected.name}>
                     {selected.name}
                   </h2>
-                  <button className="small ghost" onClick={() => setSel(null)} aria-label="Close">
-                    ✕
+                  <button className="small ghost icon" onClick={() => setSel(null)} aria-label="Close">
+                    <Icon.x />
                   </button>
                 </div>
                 <div className="kv" style={{ gridTemplateColumns: "120px 1fr" }}>
@@ -519,7 +519,7 @@ export function TraceView() {
                     <div className="crumbs">
                       {spanLogs.map((l) => (
                         <div key={l.id} className="crumb">
-                          <span className="crumb-l" style={{ color: LEVEL_COLORS[levelOf(l.severity)] }}>
+                          <span className="crumb-l" style={{ color: LEVEL_TEXT[levelOf(l.severity)] }}>
                             {levelOf(l.severity)}
                           </span>
                           <span className="crumb-b">{l.body}</span>

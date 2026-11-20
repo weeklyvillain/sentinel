@@ -85,7 +85,7 @@ export default function Alarms() {
                     {!a.enabled ? (
                       <span className="badge">disabled</span>
                     ) : a.state === "firing" ? (
-                      <span className="badge bad">● firing</span>
+                      <span className="badge bad">firing</span>
                     ) : a.state === "pending" ? (
                       <span className="badge warn" title={`Fires if it still holds after ${fmtDuration(a.for_s)}`}>
                         pending

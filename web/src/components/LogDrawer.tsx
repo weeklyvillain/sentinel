@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { LogRecord, qs } from "../api";
 import { flatten, messageOf, valueText } from "../logjson";
 import { fmtFull, levelOf } from "../util";
-import { useToast } from "./ui";
+import { Icon, useToast } from "./ui";
 
 // LogDrawer shows one log line: its message, every field of a JSON body
 // (pick one as the service's message), the OpenTelemetry attributes and the
@@ -76,14 +76,14 @@ export function LogDrawer(p: LogDrawerProps) {
           {log.env && <span className="badge">{log.env}</span>}
           <span className="small muted nowrap">{fmtFull(log.time)}</span>
           <div className="right">
-            <button className="ghost small" onClick={p.onPrev} disabled={!p.onPrev} aria-label="Newer line" title="Newer line (↑)">
-              ↑
+            <button className="ghost small icon" onClick={p.onPrev} disabled={!p.onPrev} aria-label="Newer line" title="Newer line (↑)">
+              <Icon.up />
             </button>
-            <button className="ghost small" onClick={p.onNext} disabled={!p.onNext} aria-label="Older line" title="Older line (↓)">
-              ↓
+            <button className="ghost small icon" onClick={p.onNext} disabled={!p.onNext} aria-label="Older line" title="Older line (↓)">
+              <Icon.down />
             </button>
-            <button className="ghost" onClick={p.onClose} aria-label="Close">
-              ✕
+            <button className="ghost icon" onClick={p.onClose} aria-label="Close">
+              <Icon.x />
             </button>
           </div>
         </div>

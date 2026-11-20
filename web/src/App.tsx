@@ -87,16 +87,28 @@ function ShellBody() {
   const analyzing = status?.analyzing ?? 0;
   const setup = useAsync(() => api.get<SetupState>("/api/setup"), [], 60000);
   const setupLeft = setup.data?.remaining ?? 0;
-  const nav = [
+  // Counts are neutral; only something actually broken (a firing alarm,
+  // a failing check) is red.
+  type NavItem = { to: string; label: string; icon: () => JSX.Element; end?: boolean; count?: number; bad?: boolean };
+  const nav: NavItem[] = [
     { to: "/", label: "Overview", icon: Icon.overview, end: true },
+    { to: "/issues", label: "Issues", icon: Icon.issues, count: analyzing },
     { to: "/logs", label: "Logs", icon: Icon.logs },
     { to: "/traces", label: "Traces", icon: Icon.traces },
-    { to: "/issues", label: "Issues", icon: Icon.issues, count: analyzing },
     { to: "/dashboards", label: "Dashboards", icon: Icon.dashboards },
-    { to: "/alerts", label: "Alerts", icon: Icon.alarms, count: firing + checksDown },
-    { to: "/settings", label: "Settings", icon: Icon.settings },
-    { to: "/setup", label: "Setup", icon: Icon.setup, count: setupLeft },
+    { to: "/alerts", label: "Alerts", icon: Icon.alarms, count: firing + checksDown, bad: true },
   ];
+  const navBottom: NavItem[] = [
+    { to: "/setup", label: "Setup", icon: Icon.setup, count: setupLeft },
+    { to: "/settings", label: "Settings", icon: Icon.settings },
+  ];
+  const link = (n: NavItem) => (
+    <NavLink key={n.to} to={n.to} end={n.end}>
+      <n.icon />
+      {n.label}
+      {n.count ? <span className={"count" + (n.bad ? " bad" : "")}>{n.count}</span> : null}
+    </NavLink>
+  );
   const dashTabs: SectionTab[] = [
     { path: "", label: "Dashboards", element: <Dashboards /> },
     { path: "explore", label: "Explore metrics", element: <Metrics /> },
@@ -124,19 +136,20 @@ function ShellBody() {
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <Logo /> Sentinel
+          <Logo /> <span>Sentinel</span>
         </div>
-        <nav className="nav">
-          {nav.map((n) => (
-            <NavLink key={n.to} to={n.to} end={n.end}>
-              <n.icon />
-              {n.label}
-              {n.count ? <span className="count">{n.count}</span> : null}
-            </NavLink>
-          ))}
+        <nav className="nav" aria-label="Main">
+          {nav.map(link)}
+          <div className="spacer" />
+          <div className="nav-sep" />
+          {navBottom.map(link)}
         </nav>
-        <div className="spacer" />
-        {me.info.dry_run && <div className="badge warn" style={{ margin: "0 8px 8px" }}>DRY RUN — GitHub calls are logged</div>}
+        {me.info.dry_run && (
+          <div className="env-flag" title="Dry run: GitHub calls are logged instead of made">
+            <span className="dot warn" style={{ animation: "none" }} />
+            <span>Dry run · GitHub calls are logged</span>
+          </div>
+        )}
         <div className="user">
           {me.user?.avatar_url ? <img src={me.user.avatar_url} alt="" /> : null}
           <span className="name" title={me.user?.login}>{me.user?.name || me.user?.login}</span>

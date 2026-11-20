@@ -4,7 +4,7 @@ import { Alias, api, Bucket, Group, LogRecord, qs, Release, SampleEvent, TagSumm
 import { bucketKeys, StackedBars } from "../components/charts";
 import { CopyLink, Empty, ErrorNote, Icon, Loading, Modal, Seg, StatusBadge, useAsync, useAction } from "../components/ui";
 import { useServices } from "../shared";
-import { ago, fmtFull, fmtNum, fmtTime, LEVEL_COLORS, levelOf } from "../util";
+import { ago, fmtFull, fmtNum, fmtTime, LEVEL_COLORS, LEVEL_TEXT, levelOf } from "../util";
 import { Queue } from "./AI";
 import { FixerRuns } from "./FixerRuns";
 
@@ -269,7 +269,7 @@ function Releases({ releases, onOpen }: { releases: { data?: Release[]; error?: 
 
 function KindBadge({ g }: { g: Group }) {
   if (g.kind === "down") return <span className="badge bad" style={{ marginRight: 6 }}>outage</span>;
-  if (g.kind === "perf") return <span className="badge warn" style={{ marginRight: 6 }}>performance</span>;
+  if (g.kind === "perf") return <span className="badge" style={{ marginRight: 6 }}>performance</span>;
   if (g.kind === "span") return <span className="badge" style={{ marginRight: 6 }}>span</span>;
   return null;
 }
@@ -308,7 +308,7 @@ function FixBadge({ g }: { g: Group }) {
   const f = FIX[g.fix_state];
   const badge = (
     <span className={"badge " + f.cls} title={f.help}>
-      🤖 {f.label}
+      {f.label}
       {(g.fix_prs?.length ?? 0) > 1 ? ` · ${g.fix_prs!.length} repos` : g.fix_pr_number ? ` #${g.fix_pr_number}` : ""}
     </span>
   );
@@ -379,8 +379,8 @@ function GroupTable({ groups, onOpen, onChanged }: { groups: { data?: Group[]; e
                       <KindBadge g={g} />
                       {g.title}
                     </div>
-                    {g.block_reason && g.status === "pending" && <div className="small" style={{ color: "var(--warn)" }}>⚠ {g.block_reason}</div>}
-                    {g.status === "ignored" && snoozeText(g) && <div className="small muted">💤 {snoozeText(g)}</div>}
+                    {g.block_reason && g.status === "pending" && <div className="small" style={{ color: "var(--warn)" }}>{g.block_reason}</div>}
+                    {g.status === "ignored" && snoozeText(g) && <div className="small muted">{snoozeText(g)}</div>}
                     {g.triage_verdict && (
                       <div className="small" title={g.triage_reason}>
                         <TriageBadge g={g} />
@@ -582,7 +582,7 @@ export function IssueDetail() {
               onClick={fix}
               title="Add the fix label to the GitHub issue: the repository's workflow runs Claude Code, which opens a pull request"
             >
-              🤖 {g.fix_state ? "Try fixing again" : "Fix it"}
+              <Icon.wrench /> {g.fix_state ? "Try fixing again" : "Fix it"}
             </button>
           )}
           {(g.status === "open" || g.status === "pending") && (
@@ -602,7 +602,7 @@ export function IssueDetail() {
           ) : (
             <>
               <select value="-1" disabled={busy} onChange={(e) => snooze(+e.target.value)} aria-label="Snooze" title="Ignore for a while; it comes back by itself">
-                <option value="-1">💤 Snooze…</option>
+                <option value="-1">Snooze…</option>
                 {SNOOZES.map((o, i) => (
                   <option key={i} value={i}>
                     {o.label}
@@ -665,7 +665,7 @@ export function IssueDetail() {
       )}
       {g.status === "ignored" && snoozeText(g) && (
         <div className="notice" style={{ marginBottom: 16 }}>
-          💤 This issue is {snoozeText(g)}. It is reopened when that happens.
+          This issue is {snoozeText(g)}. It is reopened when that happens.
         </div>
       )}
       <div className="grid stats" style={{ marginBottom: 16 }}>
@@ -883,7 +883,7 @@ function Breadcrumbs({ groupId, sampleId }: { groupId: number; sampleId: number 
         {b.data.logs.map((l) => (
           <div key={l.id} className={"crumb " + levelOf(l.severity)}>
             <span className="crumb-t">{new Date(l.time).toLocaleTimeString([], { hour12: false })}</span>
-            <span className="crumb-l" style={{ color: LEVEL_COLORS[levelOf(l.severity)] }}>
+            <span className="crumb-l" style={{ color: LEVEL_TEXT[levelOf(l.severity)] }}>
               {levelOf(l.severity)}
             </span>
             {b.data!.source === "trace" && <span className="crumb-s">{l.service}</span>}

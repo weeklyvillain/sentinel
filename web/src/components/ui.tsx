@@ -97,8 +97,8 @@ export function Modal(props: { title: string; onClose: () => void; children: Rea
       <div className={"modal" + (props.wide === "x" ? " xwide" : props.wide ? " wide" : "")} role="dialog" aria-label={props.title}>
         <div className="modal-head">
           <h2>{props.title}</h2>
-          <button className="ghost" onClick={props.onClose} aria-label="Close">
-            ✕
+          <button className="ghost icon" onClick={props.onClose} aria-label="Close">
+            <Icon.x />
           </button>
         </div>
         <div className="modal-body">{props.children}</div>
@@ -244,11 +244,11 @@ export function CopyLink({ label = "Copy link", pin = false }: { label?: string;
   return (
     <span className="copy-link">
       <button className="ghost" onClick={() => copy(location.href, "Link copied. It opens this view with the same filters and time range.")} title="Copy a link to this view">
-        🔗 {label}
+        <Icon.link /> {label}
       </button>
       {pin && (
-        <button className="ghost" onClick={() => copy(pinnedURL(), "Link copied with this exact time window.")} title="Copy a link to this exact time window">
-          ⏱
+        <button className="ghost icon" onClick={() => copy(pinnedURL(), "Link copied with this exact time window.")} title="Copy a link to this exact time window" aria-label="Copy a link to this exact time window">
+          <Icon.clock />
         </button>
       )}
     </span>
@@ -277,13 +277,13 @@ export function RangeLabel({ range }: { range: string }) {
 }
 
 export function StatusBadge({ status }: { status: GroupStatus }) {
-  const cls = { pending: "warn", open: "bad", resolved: "ok", ignored: "" }[status];
+  const cls = { pending: "warn", open: "err", resolved: "ok", ignored: "" }[status];
   return <span className={"badge " + cls}>{status}</span>;
 }
 
 export function Stat(props: { label: string; value: ReactNode; hint?: ReactNode; tone?: "ok" | "bad" }) {
   return (
-    <div className={"card stat " + (props.tone ?? "")}>
+    <div className={"card stat" + (props.tone === "bad" ? " bad" : "")}>
       <div className="label">{props.label}</div>
       <div className="value">{props.value}</div>
       {props.hint && <div className="hint">{props.hint}</div>}
@@ -294,7 +294,7 @@ export function Stat(props: { label: string; value: ReactNode; hint?: ReactNode;
 // --- icons (inline, stroke-based) ---
 
 const I = (d: string) => () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
     <path d={d} />
   </svg>
 );
@@ -313,14 +313,30 @@ export const Icon = {
   settings: I("M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"),
   traces: I("M3 6h10M7 12h10M11 18h10M3 6v0M7 12v0"),
   setup: I("M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"),
+  x: I("M18 6 6 18M6 6l12 12"),
+  check: I("M20 6 9 17l-5-5"),
+  link: I("M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"),
+  clock: I("M12 7v5l3 2M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z"),
+  edit: I("M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"),
+  wrench: I("M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.9 6.9a2.1 2.1 0 0 1-3-3l6.9-6.9a6 6 0 0 1 7.9-7.9z"),
+  snooze: I("M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"),
+  up: I("M18 15l-6-6-6 6"),
+  down: I("M6 9l6 6 6-6"),
+  right: I("M9 18l6-6-6-6"),
+  external: I("M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"),
   ai: I("M12 3l1.9 5.8L20 10l-6.1 1.2L12 17l-1.9-5.8L4 10l6.1-1.2zM19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"),
 };
 
+/**
+ * The mark: a lens with an off-centre pupil, watching. Drawn in
+ * currentColor so it follows the ink of whatever it sits on.
+ */
 export function Logo({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 32 32" className={className} aria-hidden>
-      <path d="M16 2 4 7v8c0 7.5 5.1 13.4 12 15 6.9-1.6 12-7.5 12-15V7z" fill="#6366f1" />
-      <path d="m11 16 3.5 3.5L21.5 12" stroke="white" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+    <svg viewBox="0 0 24 24" className={className} aria-hidden>
+      <rect x="1" y="1" width="22" height="22" rx="6" fill="currentColor" />
+      <circle cx="12" cy="12" r="6" fill="none" stroke="var(--on-ink, #fff)" strokeWidth="2" />
+      <circle cx="14" cy="10" r="2.25" fill="var(--on-ink, #fff)" />
     </svg>
   );
 }
