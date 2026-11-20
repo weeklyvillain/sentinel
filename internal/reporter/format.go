@@ -91,8 +91,14 @@ func sampleBlock(e event.Event) string {
 	return b.String()
 }
 
+// IssueExtra is optional context for a new issue.
+type IssueExtra struct {
+	Tags        []store.TagSummary
+	Breadcrumbs []store.LogRecord // log lines leading up to the latest sample
+}
+
 // IssueBody assembles the full issue: deterministic facts + AI sections + marker.
-func IssueBody(g store.Group, d ai.Draft, samples []store.Sample, provider string) string {
+func IssueBody(g store.Group, d ai.Draft, samples []store.Sample, provider string, x IssueExtra) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "## Summary\n\n%s\n\n", d.Summary)
 	if d.LikelyCause != "" {
@@ -105,6 +111,15 @@ func IssueBody(g store.Group, d ai.Draft, samples []store.Sample, provider strin
 		}
 		b.WriteString("\n")
 	}
+	if t := d.Triage; t != nil {
+		b.WriteString("## Worth fixing?\n\n")
+		verdict := map[string]string{ai.VerdictFix: "**Yes**, a bug in this code", ai.VerdictIgnore: "**No**, probably noise",
+			ai.VerdictInvestigate: "**Needs a person**: likely not fixable in code alone"}[t.Verdict]
+		if verdict == "" {
+			verdict = t.Verdict
+		}
+		fmt.Fprintf(&b, "%s. Severity: %s, confidence %.0f%%.\n\n%s\n\n", verdict, orDash(t.Severity), 100*t.Confidence, neutralize(t.Reason))
+	}
 	b.WriteString("## Details\n\n| | |\n|---|---|\n")
 	fmt.Fprintf(&b, "| Service | `%s` |\n", cell(g.Service))
 	fmt.Fprintf(&b, "| Environment | `%s` |\n", cell(orDash(g.Env)))
@@ -112,7 +127,19 @@ func IssueBody(g store.Group, d ai.Draft, samples []store.Sample, provider strin
 	fmt.Fprintf(&b, "| Occurrences | %d |\n", g.Count)
 	fmt.Fprintf(&b, "| First seen | %s |\n", ts(g.FirstSeen))
 	fmt.Fprintf(&b, "| Last seen | %s |\n", ts(g.LastSeen))
+	if g.FirstRelease != "" {
+		fmt.Fprintf(&b, "| First seen in release | `%s` |\n", cell(g.FirstRelease))
+	}
+	if g.LastRelease != "" && g.LastRelease != g.FirstRelease {
+		fmt.Fprintf(&b, "| Latest release | `%s` |\n", cell(g.LastRelease))
+	}
+	if g.Users > 0 {
+		fmt.Fprintf(&b, "| Users affected | %d |\n", g.Users)
+	}
 	fmt.Fprintf(&b, "| Fingerprint | `%s` |\n\n", g.Fingerprint)
+	if tags := tagLines(x.Tags); tags != "" {
+		b.WriteString("## Tags\n\n" + tags + "\n")
+	}
 
 	if g.Kind == event.KindDown && len(samples) > 0 {
 		last := samples[len(samples)-1].Event
@@ -141,6 +168,19 @@ func IssueBody(g store.Group, d ai.Draft, samples []store.Sample, provider strin
 			b.WriteString(sampleBlock(samples[len(samples)-1].Event))
 		}
 		b.WriteString("\n")
+	}
+	if len(x.Breadcrumbs) > 1 {
+		b.WriteString("<details><summary>Breadcrumbs (log lines before the latest occurrence)</summary>\n\n")
+		var lines strings.Builder
+		for _, l := range x.Breadcrumbs {
+			sev := l.SeverityText
+			if sev == "" {
+				sev = "-"
+			}
+			fmt.Fprintf(&lines, "%s %-5s %s %s\n", l.Time.UTC().Format("15:04:05.000"), sev, l.Service, strings.ReplaceAll(l.Body, "\n", " "))
+		}
+		b.WriteString(codeBlock(strings.TrimRight(lines.String(), "\n")))
+		b.WriteString("\n</details>\n\n")
 	}
 	fmt.Fprintf(&b, "---\n_Filed by Sentinel. Title, summary, likely cause and next steps were written by `%s` and may be wrong; details and samples are redacted telemetry._\n\n", provider)
 	b.WriteString(Marker(g.Fingerprint))
@@ -172,11 +212,35 @@ func RegressionComment(g store.Group, samples []store.Sample) string {
 		fmt.Fprintf(&b, "**Regression:** `%s` stopped sending telemetry again (%s).\n", cell(g.Service), ts(g.LastSeen))
 		return b.String()
 	}
-	fmt.Fprintf(&b, "**Regression:** this error happened again after the issue was closed. %d new occurrence(s) (%d total), last seen %s.\n\n",
+	fmt.Fprintf(&b, "**Regression:** this error happened again after the issue was closed. %d new occurrence(s) (%d total), last seen %s.",
 		g.NewSinceReport(), g.Count, ts(g.LastSeen))
+	if g.LastRelease != "" {
+		fmt.Fprintf(&b, " Came back in release `%s`.", cell(g.LastRelease))
+	}
+	b.WriteString("\n\n")
 	if len(samples) > 0 {
 		b.WriteString("Latest sample:\n\n")
 		b.WriteString(sampleBlock(samples[len(samples)-1].Event))
+	}
+	return b.String()
+}
+
+// tagLines renders the top values of each tag as a list.
+func tagLines(tags []store.TagSummary) string {
+	var b strings.Builder
+	for _, t := range tags {
+		if t.Total == 0 || (t.Distinct == 1 && (t.Key == "environment" || t.Key == "release")) {
+			continue
+		}
+		var vals []string
+		for _, v := range t.Top {
+			vals = append(vals, fmt.Sprintf("`%s` %d%%", cell(v.Value), v.Count*100/t.Total))
+		}
+		more := ""
+		if t.Distinct > len(t.Top) {
+			more = fmt.Sprintf(" (+%d more)", t.Distinct-len(t.Top))
+		}
+		fmt.Fprintf(&b, "- **%s**: %s%s\n", t.Key, strings.Join(vals, ", "), more)
 	}
 	return b.String()
 }

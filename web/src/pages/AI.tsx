@@ -54,6 +54,7 @@ function SettingsCard({ state, onSaved }: { state: AIState; onSaved: () => void 
     model: f.model,
     base_url: f.base_url,
     timeout_s: Number(f.timeout_s),
+    skip_noise: !!f.skip_noise,
     ...(apiKey ? { api_key: apiKey } : {}),
   });
 
@@ -97,8 +98,9 @@ function SettingsCard({ state, onSaved }: { state: AIState; onSaved: () => void 
         <label className="field">
           Provider
           <select value={f.provider} onChange={(e) => set({ provider: e.target.value as AISettings["provider"] })}>
+            <option value="claude-code">Claude Code in the fixer (your Claude subscription, reads the code)</option>
             <option value="openai">Local / OpenAI-compatible (Ollama, llama.cpp, vLLM…)</option>
-            <option value="anthropic">Anthropic (Claude)</option>
+            <option value="anthropic">Anthropic API (Claude, billed per token)</option>
             <option value="none">None (template only)</option>
           </select>
         </label>
@@ -113,7 +115,21 @@ function SettingsCard({ state, onSaved }: { state: AIState; onSaved: () => void 
             <input className="mono" value={f.base_url} onChange={(e) => set({ base_url: e.target.value })} placeholder="http://ollama:11434/v1" />
           </label>
         )}
-        {f.provider !== "none" && (
+        {f.provider === "claude-code" && (
+          <div className="field full">
+            <span className="help">
+              The fixer container investigates each new error with Claude Code, reading the service's repository, and decides whether it is worth fixing:{" "}
+              <strong>fix</strong>, <strong>ignore</strong> (noise) or <strong>investigate</strong> (needs a person). Auto-fix only starts for "fix". It uses the
+              fixer's sign-in (your subscription), so no API key is needed here; set the model with <code>FIXER_ANALYZE_MODEL</code>. If the fixer does not pick
+              an error up within 20 minutes, its issue is filed with the template.
+            </span>
+            <label className="check" style={{ marginTop: 8 }}>
+              <input type="checkbox" checked={!!f.skip_noise} onChange={(e) => set({ skip_noise: e.target.checked })} /> Don't file issues for errors judged not
+              worth fixing (they are ignored; un-ignore them in Issues)
+            </label>
+          </div>
+        )}
+        {f.provider !== "none" && f.provider !== "claude-code" && (
           <label className="field">
             Model
             <input
@@ -125,7 +141,7 @@ function SettingsCard({ state, onSaved }: { state: AIState; onSaved: () => void 
             />
           </label>
         )}
-        {f.provider !== "none" && (
+        {f.provider !== "none" && f.provider !== "claude-code" && (
           <label className="field">
             API key
             <input
@@ -150,7 +166,7 @@ function SettingsCard({ state, onSaved }: { state: AIState; onSaved: () => void 
       {f.provider === "openai" && <Models baseURL={f.base_url} current={f.model} onPick={(m) => set({ model: m })} pull={state.pull} />}
 
       <div className="row" style={{ marginTop: 14, gap: 8 }}>
-        <button onClick={tryIt} disabled={testing || f.provider === "none"}>
+        <button onClick={tryIt} disabled={testing || f.provider === "none" || f.provider === "claude-code"}>
           {testing ? "Analyzing a sample error…" : "Try it on a sample error"}
         </button>
         <button className="primary" onClick={save} disabled={saving || !dirty}>

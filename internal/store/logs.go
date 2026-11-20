@@ -56,14 +56,17 @@ func (s *Store) InsertLogs(ctx context.Context, recs []LogRecord) error {
 
 // LogQuery filters logs. Zero values mean "no filter".
 type LogQuery struct {
-	Q           string            // free text (full-text search)
-	Services    []string          // any of
-	MinSeverity int32             // severity_number >=
-	From, To    time.Time         // [From, To)
-	TraceID     string            //
-	Fingerprint string            // logs belonging to a group
-	Kind        string            // log | span
-	Attrs       map[string]string // exact attribute matches
+	Q           string    // free text (full-text search)
+	Services    []string  // any of
+	MinSeverity int32     // severity_number >=
+	From, To    time.Time // [From, To)
+	TraceID     string    //
+	Fingerprint string    // logs belonging to a group
+	// Fingerprints, if set, is used instead of Fingerprint: a group and the
+	// fingerprints merged into it.
+	Fingerprints []string
+	Kind         string            // log | span
+	Attrs        map[string]string // exact attribute matches
 	// Cursor for pagination (results older than this record).
 	BeforeTime time.Time
 	BeforeID   int64
@@ -168,7 +171,12 @@ func (q LogQuery) where() (string, []any) {
 		conds = append(conds, "trace_id = ?")
 		args = append(args, strings.ToLower(q.TraceID))
 	}
-	if q.Fingerprint != "" {
+	if len(q.Fingerprints) > 0 {
+		conds = append(conds, "fingerprint IN ("+placeholders(len(q.Fingerprints))+")")
+		for _, f := range q.Fingerprints {
+			args = append(args, f)
+		}
+	} else if q.Fingerprint != "" {
 		conds = append(conds, "fingerprint = ?")
 		args = append(args, q.Fingerprint)
 	}
@@ -345,6 +353,8 @@ func (s *Store) Prune(ctx context.Context, logsBefore, metricsBefore time.Time) 
 	}{
 		{`DELETE FROM logs WHERE id IN (SELECT id FROM logs WHERE ts < ? LIMIT 5000)`, logsBefore},
 		{`DELETE FROM metric_points WHERE rowid IN (SELECT rowid FROM metric_points WHERE ts < ? LIMIT 20000)`, metricsBefore},
+		{`DELETE FROM metric_hist WHERE rowid IN (SELECT rowid FROM metric_hist WHERE ts < ? LIMIT 20000)`, metricsBefore},
+		{`DELETE FROM span_stats WHERE rowid IN (SELECT rowid FROM span_stats WHERE ts < ? LIMIT 20000)`, metricsBefore},
 		{`DELETE FROM webhook_deliveries WHERE ts < ?`, logsBefore},
 		{`DELETE FROM alarm_events WHERE ts < ?`, metricsBefore.Add(-30 * 24 * time.Hour)},
 		{`DELETE FROM check_results WHERE rowid IN (SELECT rowid FROM check_results WHERE ts < ? LIMIT 20000)`, metricsBefore},

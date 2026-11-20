@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,6 +27,7 @@ type cumState struct {
 	start      uint64
 	value, sum float64
 	count      uint64
+	buckets    []uint64
 	seen       time.Time
 }
 
@@ -35,21 +37,70 @@ func newDeltaTracker() *deltaTracker { return &deltaTracker{last: map[string]cum
 
 // step returns the delta since the previous point of a cumulative series.
 func (d *deltaTracker) step(key string, start uint64, value, sum float64, count uint64, now time.Time) (dv, dsum float64, dcount uint64, ok bool) {
+	dv, dsum, dcount, _, ok = d.stepBuckets(key, start, value, sum, count, nil, now)
+	return
+}
+
+// stepBuckets is step for histograms, with per-bucket counts.
+func (d *deltaTracker) stepBuckets(key string, start uint64, value, sum float64, count uint64, buckets []uint64, now time.Time) (dv, dsum float64, dcount uint64, dbuckets []uint64, ok bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	prev, had := d.last[key]
 	if len(d.last) >= maxSeries && !had {
 		d.evict(now)
 	}
-	d.last[key] = cumState{start: start, value: value, sum: sum, count: count, seen: now}
+	d.last[key] = cumState{start: start, value: value, sum: sum, count: count, buckets: append([]uint64(nil), buckets...), seen: now}
 	if !had {
-		return 0, 0, 0, false
+		return 0, 0, 0, nil, false
 	}
 	// A new start time or a decrease means the counter was reset.
-	if (start != 0 && start != prev.start) || value < prev.value || count < prev.count {
-		return value, sum, count, true
+	if (start != 0 && start != prev.start) || value < prev.value || count < prev.count || len(prev.buckets) != len(buckets) {
+		return value, sum, count, buckets, true
 	}
-	return value - prev.value, sum - prev.sum, count - prev.count, true
+	if buckets != nil {
+		dbuckets = make([]uint64, len(buckets))
+		for i := range buckets {
+			if buckets[i] >= prev.buckets[i] {
+				dbuckets[i] = buckets[i] - prev.buckets[i]
+			}
+		}
+	}
+	return value - prev.value, sum - prev.sum, count - prev.count, dbuckets, true
+}
+
+// expBounds converts an exponential histogram's positive buckets to explicit
+// upper bounds (zero bucket first, +Inf last), keeping at most 64 buckets.
+func expBounds(dp *metricspb.ExponentialHistogramDataPoint) ([]float64, []uint64) {
+	pos := dp.GetPositive()
+	counts := pos.GetBucketCounts()
+	if len(counts) == 0 || len(counts) > 160 {
+		return nil, nil
+	}
+	base := math.Pow(2, math.Pow(2, -float64(dp.GetScale())))
+	bounds := []float64{0}
+	out := []uint64{dp.GetZeroCount()}
+	for i, c := range counts {
+		bounds = append(bounds, math.Pow(base, float64(int(pos.GetOffset())+i+1)))
+		out = append(out, c)
+	}
+	out = append(out, 0) // +Inf
+	// Merge neighbours until there are at most 64 buckets.
+	for len(out) > 64 {
+		var nb []float64
+		var nc []uint64
+		for i := 0; i < len(bounds); i += 2 {
+			if i+1 < len(bounds) {
+				nb = append(nb, bounds[i+1])
+				nc = append(nc, out[i]+out[i+1])
+			} else {
+				nb = append(nb, bounds[i])
+				nc = append(nc, out[i])
+			}
+		}
+		nc = append(nc, out[len(out)-1])
+		bounds, out = nb, nc
+	}
+	return bounds, out
 }
 
 func (d *deltaTracker) evict(now time.Time) {
@@ -141,15 +192,20 @@ func (d *deltaTracker) convert(service, resource string, m *metricspb.Metric, no
 		cumulative := h.GetAggregationTemporality() == metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE
 		for _, dp := range h.GetDataPoints() {
 			sum, count := dp.GetSum(), dp.GetCount()
+			buckets := dp.GetBucketCounts()
 			if cumulative {
 				var ok bool
-				_, sum, count, ok = d.step(key(dp.GetAttributes(), dp.GetStartTimeUnixNano()), dp.GetStartTimeUnixNano(), 0, sum, count, now)
+				_, sum, count, buckets, ok = d.stepBuckets(key(dp.GetAttributes(), dp.GetStartTimeUnixNano()), dp.GetStartTimeUnixNano(), 0, sum, count, buckets, now)
 				if !ok {
 					continue
 				}
 			}
 			if count > 0 {
 				add(dp.GetTimeUnixNano(), dp.GetAttributes(), "histogram", sum/float64(count))
+				if len(buckets) > 0 && len(buckets) == len(dp.GetExplicitBounds())+1 {
+					out[len(out)-1].Bounds = dp.GetExplicitBounds()
+					out[len(out)-1].Counts = buckets
+				}
 			}
 		}
 	case *metricspb.Metric_ExponentialHistogram:
@@ -157,15 +213,23 @@ func (d *deltaTracker) convert(service, resource string, m *metricspb.Metric, no
 		cumulative := h.GetAggregationTemporality() == metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE
 		for _, dp := range h.GetDataPoints() {
 			sum, count := dp.GetSum(), dp.GetCount()
+			bounds, buckets := expBounds(dp)
 			if cumulative {
 				var ok bool
-				_, sum, count, ok = d.step(key(dp.GetAttributes(), dp.GetStartTimeUnixNano()), dp.GetStartTimeUnixNano(), 0, sum, count, now)
+				// A rescale changes the buckets; a different scale or offset
+				// is a different series.
+				k := key(dp.GetAttributes(), dp.GetStartTimeUnixNano()) + "/" + strconv.Itoa(int(dp.GetScale())) + "/" + strconv.Itoa(int(dp.GetPositive().GetOffset()))
+				_, sum, count, buckets, ok = d.stepBuckets(k, dp.GetStartTimeUnixNano(), 0, sum, count, buckets, now)
 				if !ok {
 					continue
 				}
 			}
 			if count > 0 {
 				add(dp.GetTimeUnixNano(), dp.GetAttributes(), "histogram", sum/float64(count))
+				if len(bounds) > 0 && len(buckets) == len(bounds)+1 {
+					out[len(out)-1].Bounds = bounds
+					out[len(out)-1].Counts = buckets
+				}
 			}
 		}
 	case *metricspb.Metric_Summary:

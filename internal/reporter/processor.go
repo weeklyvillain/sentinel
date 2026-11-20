@@ -18,6 +18,37 @@ import (
 type Processor struct {
 	Store *store.Store
 	Log   *slog.Logger
+	// NPlusOne is how many identical queries under one span make an N+1
+	// performance issue (0 = off).
+	NPlusOne int
+}
+
+// Release records the version a service is sending from.
+func (p *Processor) Release(ctx context.Context, service, env, version string, t time.Time) {
+	if err := p.Store.TouchRelease(ctx, service, env, version, t); err != nil {
+		p.log().Error("touch release", "service", service, "err", err)
+	}
+}
+
+// Spans redacts and stores spans and looks for N+1 queries.
+func (p *Processor) Spans(ctx context.Context, spans []store.Span) {
+	for i := range spans {
+		sp := &spans[i]
+		sp.Name = redact.String(sp.Name)
+		sp.StatusMsg = redact.String(sp.StatusMsg)
+		redact.Attrs(sp.Attrs)
+		for j := range sp.Events {
+			redact.Attrs(sp.Events[j].Attrs)
+		}
+	}
+	if err := p.Store.InsertSpans(ctx, spans); err != nil {
+		p.log().Error("insert spans", "count", len(spans), "err", err)
+	}
+	if p.NPlusOne > 0 {
+		for _, e := range DetectNPlusOne(spans, p.NPlusOne) {
+			p.Event(ctx, e)
+		}
+	}
 }
 
 func (p *Processor) log() *slog.Logger {
@@ -49,11 +80,13 @@ func (p *Processor) Records(ctx context.Context, recs []ingest.Record) {
 		l.Body = redact.String(l.Body)
 		redact.Attrs(l.Attrs)
 		if r.Error != nil {
-			g, err := p.Record(ctx, *r.Error)
+			// The log line keeps the fingerprint it computed to (not the
+			// group's, which differs after a merge) so merges can be undone.
+			_, fp, err := p.record(ctx, *r.Error)
 			if err != nil {
 				p.log().Error("record event", "service", r.Error.Service, "err", err)
 			} else {
-				l.Fingerprint = g.Fingerprint
+				l.Fingerprint = fp
 			}
 		}
 		logs = append(logs, l)
@@ -72,12 +105,18 @@ func (p *Processor) Metrics(ctx context.Context, pts []store.MetricPoint) {
 
 // Record is Event with the resulting group returned.
 func (p *Processor) Record(ctx context.Context, e event.Event) (store.Group, error) {
+	g, _, err := p.record(ctx, e)
+	return g, err
+}
+
+func (p *Processor) record(ctx context.Context, e event.Event) (store.Group, string, error) {
 	if e.Time.IsZero() {
 		e.Time = time.Now().UTC()
 	}
 	redact.Event(&e)
 	fp := fingerprint.Compute(&e)
-	return p.Store.RecordEvent(ctx, fp, e)
+	g, err := p.Store.RecordEvent(ctx, fp, e)
+	return g, fp, err
 }
 
 // DownMessage is the stable message of synthetic down events.

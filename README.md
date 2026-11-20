@@ -47,7 +47,21 @@ app ──OTLP──▶ Collector ──otlphttp──▶ Sentinel :4318 ──�
      is ignored and Sentinel stays quiet.
    - At most `MAX_ISSUES_PER_HOUR` new issues per rolling hour; the rest stay
      pending until there is room.
-5. **Service down** – a *watched* service (the **Watch** switch under
+5. **Releases and tags** – the resource attribute `service.version` is the
+   release. Each group remembers the release it was first and last seen in,
+   and the release a resolved error came back in (shown in the issue and the
+   regression comment). Per group Sentinel also counts the values of a few
+   tags: environment, release, user (`enduser.id`, `user.id`, …), host,
+   instance, route, method, status code, region, OS, browser and runtime.
+   The number of distinct users is the "users affected" figure.
+6. **Performance issues** – from traces Sentinel files *performance* issues
+   (kind `perf`) through the same pipeline: **N+1 queries** (a span with at
+   least `PERF_N_PLUS_ONE` identical database calls directly under it),
+   **slow endpoints** (an entry operation whose p95 over 15 minutes is above
+   `PERF_SLOW_P95`, with at least 20 requests) and **latency regressions**
+   (p95 over the last hour more than twice the day before, and at least
+   100 ms worse). Slow-endpoint and regression issues link an example trace.
+7. **Service down** – a *watched* service (the **Watch** switch under
    **Settings → Services**) that was seen and then sends nothing for `DOWN_AFTER` gets a
    synthetic `down` event. Services that are not watched are never flagged for
    being quiet. The `down` event that goes through the same
@@ -55,6 +69,110 @@ app ──OTLP──▶ Collector ──otlphttp──▶ Sentinel :4318 ──�
    Sentinel restart there is a grace period of `DOWN_AFTER` before anything can
    be flagged. When the service sends again, Sentinel comments the outage
    length and closes the issue; a later outage reopens the same issue.
+
+## Automated fixes
+
+Sentinel can hand an issue to Claude Code, which fixes it and opens a pull
+request that says `Fixes #N`. A fix is asked for automatically for each new
+issue of a service with **Auto-fix** on (Settings → Services, off by default),
+or when someone presses **Fix it** on an issue. Only error issues are sent,
+not outages or performance issues. Claude Code runs in one of two places,
+chosen with `AUTOFIX_MODE`:
+
+### `AUTOFIX_MODE=fixer`: the fixer container next to Sentinel
+
+`sentinel-fixer` (`Dockerfile.fixer`, the `fixer` Compose profile) runs the
+official Claude Code CLI on the Sentinel server. It signs in with
+**your Claude subscription**: run `claude setup-token` on your own machine
+and put the token in `deploy/.env` as `CLAUDE_CODE_OAUTH_TOKEN` (or set
+`FIXER_ANTHROPIC_API_KEY` to bill an API key instead). Fixes then count
+against your plan's usage limits, which assume ordinary individual use.
+Sentinel never sees or stores the Claude credential, and there is no
+"Sign in with Claude" in the dashboard: Anthropic does not allow other apps to
+collect Claude logins.
+
+```bash
+# deploy/.env
+AUTOFIX_MODE=fixer
+FIXER_TOKEN=<openssl rand -hex 32>
+CLAUDE_CODE_OAUTH_TOKEN=<from claude setup-token>
+FIXER_EXTRA_TOOLS=Bash(go test:*)   # test commands the agent may run
+```
+
+```bash
+docker compose --profile fixer up -d --build
+```
+
+The GitHub App also needs **Contents** and **Pull requests** (read and write);
+accept the new permissions on each installation. For each job:
+
+1. The fixer asks Sentinel for work (`POST /fixer/claim`, bearer
+   `FIXER_TOKEN`) and gets the error report (samples, stack traces, tags,
+   breadcrumbs) and a token that can push to **that one repository** for an
+   hour.
+2. It clones the repository and runs `claude -p` on a new branch. Claude may
+   read and edit files and run read-only git, plus the commands in
+   `FIXER_EXTRA_TOOLS`. It runs as a separate user without the fixer's or
+   GitHub's tokens, and is told to treat the report as data. Add the
+   toolchains your tests need to `Dockerfile.fixer`.
+3. If Claude made a fix, the fixer commits it, pushes the branch and opens
+   the pull request; changes under `.github/` are never pushed. Otherwise
+   Claude's explanation is posted on the issue.
+4. Sentinel follows the pull request like below. A job without a result after
+   an hour counts as failed and can be retried.
+
+Settings → GitHub shows whether the fixer is connected, how it signs in and
+what it is working on. `FIXER_TIMEOUT` (30m), `FIXER_MAX_TURNS` (60) and
+`FIXER_MODEL` tune a run.
+
+### Investigations: is it worth fixing?
+
+The same container can also do the AI analysis that writes each issue, in
+place of the Anthropic API (Haiku, billed per token): choose **Claude Code in
+the fixer** under Settings → AI (provider `claude-code`; Sentinel needs
+`FIXER_TOKEN`, `AUTOFIX_MODE` can stay `actions`). For every new error the
+fixer clones the service's repository with a read-only token (Contents read
+is enough), and Claude Code reads the code the stack trace points at, writes
+the issue's title, summary, likely cause and next steps, and gives a verdict:
+
+- **fix**: a bug in this code worth fixing. Only these get an automatic fix.
+- **ignore**: noise (expected errors, wrong log level, someone else's outage
+  this code already handles). With **Don't file issues for errors judged not
+  worth fixing** on, these are ignored instead of filed.
+- **investigate**: real, but not fixable in this code alone (infrastructure,
+  configuration, capacity, data).
+
+The verdict, severity and reason are in the issue ("Worth fixing?") and on
+the Issues page. Investigations only read: `Read`, `Glob`, `Grep` and
+`git log/show/blame`. They use `FIXER_ANALYZE_MAX_TURNS` (25) and
+`FIXER_ANALYZE_MODEL` (default: `FIXER_MODEL`). The fix job later gets the
+investigation along. When the fixer does not pick an error up within
+20 minutes (or does not finish within 45), its issue is filed with the
+template so nothing waits forever.
+
+### `AUTOFIX_MODE=actions` (default): a workflow in each repository
+
+Sentinel adds the `AUTOFIX_LABEL` label (default `sentinel-autofix`) to the
+GitHub issue and Claude Code runs in the repository's GitHub Actions:
+
+1. The repository's workflow reacts to the label: Claude Code reads the
+   issue, fixes the error, runs the tests and opens a pull request with
+   `Fixes #N`. When it finds no confident fix it comments on the issue
+   instead. Get the workflow from **Settings → GitHub → Automated fixes**,
+   with this Sentinel's label and GitHub App bot filled in, and save it as
+   `.github/workflows/sentinel-autofix.yml`. The repository needs the secret
+   `ANTHROPIC_API_KEY` (or a `claude_code_oauth_token`).
+2. Sentinel follows the issue's timeline and shows the fix pull request on
+   the issue (`fix.requested`, `fix.opened` and `fix.merged` webhooks).
+   Merging it closes the issue, which resolves the group. If no pull request
+   appears within 2 hours the attempt shows as "no fix PR"; **Try fixing
+   again** starts another. If the error comes back after a merged fix and
+   Auto-fix is on, Sentinel asks again with the regression.
+
+The GitHub App needs no extra permissions for this (labels and the timeline
+are part of Issues). Pull requests opened with the workflow's own token do not
+start CI; give the step a GitHub App or fine-grained token as `GH_TOKEN` if
+CI must run on them.
 
 ## Dashboard
 
@@ -67,24 +185,62 @@ from the OTLP port):
   for service, level, time range, trace id, attributes and "same error";
   a clickable volume histogram, live tail and pagination. Query syntax: words
   are prefix-matched and ANDed, `"exact phrase"`, `-exclude`.
+- **Traces** – every span is stored (see `TRACE_SAMPLE_RATE`); search traces
+  by service, operation, minimum duration or errors, and open one as a
+  waterfall across services with each span's attributes, events and log
+  lines. **Performance** lists every operation (entry spans: server, consumer
+  and root spans) with requests/s, error rate and p50/p95/p99, from per-minute
+  statistics that count every span even when traces are sampled.
 - **Issues** – error groups by status with their GitHub issue, occurrence
-  chart, first/latest samples with stack traces, ignore / un-ignore, and the
-  reason a group is still pending (e.g. no repository configured).
-  The **AI queue** view lists the model analyses waiting, running, done or
-  failed, with a retry for failed ones.
-- **Dashboards** – your own graphs, gauges, stats and bar lists over metrics
-  and logs, with a panel editor, formulas and templates. **Explore metrics**
-  charts every OTLP metric a service reports (gauges as-is, cumulative
-  counters as per-interval deltas, histograms as interval means), with
-  avg/sum/max/min/count and per-attribute split; **+ Dashboard** on a chart
-  saves it as a panel.
+  chart, first/latest samples with stack traces, and the reason a group is
+  still pending (e.g. no repository configured). Filter by service,
+  environment and release ("new in this release"), sort by last/first seen,
+  events or users. An issue shows its tag breakdown, users affected, the
+  releases it appeared in and **breadcrumbs**: the log lines of the sample's
+  trace (or of its service in the minute before). **Ignore** stays quiet
+  forever; **Snooze** ignores it for a while, until N more events or until
+  the next release, then reopens it if it happened meanwhile (or marks it
+  resolved, so a later event is a regression). **Merge** a few issues of the
+  same service into one: their events and future events count there and
+  their GitHub issues are closed with a link; **Unmerge** splits one off
+  again and reopens its issue. **Releases** lists every version with the new
+  issues and regressions it brought. The **AI queue** view lists the model
+  analyses waiting, running, done or failed, with a retry for failed ones.
+- **Dashboards** – your own graphs, gauges, stats, bar lists, tables and
+  heatmaps over metrics, logs and request statistics (rate, errors, latency
+  percentiles per service or operation), with a panel editor, formulas and
+  templates. Histogram metrics also give p50/p75/p90/p95/p99 and heatmaps of
+  their buckets. **Variables** are pickers above the panels (services,
+  values of a metric attribute, or a fixed list, optionally several at once)
+  used as `$name` in queries. Deploys (a new `service.version`), outages and
+  alarms are marked on graphs. **Rows** group panels into collapsible
+  sections; dashboards export to and import from JSON. The range and variable
+  values are in the URL; the ⏱ link button pins the exact time window.
+  **Explore metrics** charts every OTLP metric a service reports (gauges
+  as-is, cumulative counters as per-interval deltas, histograms as interval
+  means), with avg/sum/max/min/count and per-attribute split;
+  **+ Dashboard** on a chart saves it as a panel.
 - **Alerts**
   - **Alarms** – rules evaluated every 15s: *log count* (matching text, level,
-    service, window) and *metric threshold* (aggregate over a window). A
-    preview shows the current value; state changes are kept as history.
+    service, window) and *metric threshold* (aggregate or histogram
+    percentile over a window). With **Fire after**, the condition must hold
+    that long (the alarm is *pending* until then) so short blips don't page.
+    Alarms that change state in the same evaluation and notify the same
+    webhooks are sent as one message. A preview shows the current value;
+    state changes are kept as history.
     Older *service down* alarms keep working; for new ones, watch the service
     instead and subscribe a webhook to `service.down`.
   - **Uptime** – HTTP checks run from the Sentinel server (see below).
+  - **SLOs** – objectives over request statistics (availability: requests
+    that did not fail; latency: requests faster than a threshold) or uptime
+    checks, over 1–90 days. Shows the current level, error budget left and
+    burn rates. Webhooks chosen on the SLO get `slo.burn` when the budget
+    burns 14.4× too fast over 1h and 5m, or 6× over 6h and 30m, and
+    `slo.recovered` after. Uptime SLOs only see probe results kept by
+    `METRIC_RETENTION`.
+  - **Maintenance** – windows during which no webhook is notified for a
+    service (or one alarm): alarms, SLOs, outages and issue events.
+    Everything is still recorded.
 - **Settings**
   - **Services** – discovered automatically from `service.name`; add a service
     ahead of time, choose which repository its issues go to and extra labels.
@@ -96,15 +252,17 @@ from the OTLP port):
     repositories Sentinel may create issues in, and pick a default repository.
   - **Webhooks** – Slack, Discord or generic JSON targets for `issue.created`,
     `issue.regression`, `issue.updated`, `service.down`, `service.recovered`,
-    `check.down`, `check.recovered`
-    (alarm notifications go to the webhooks chosen on each alarm). JSON
+    `check.down`, `check.recovered`, `fix.requested`, `fix.opened`, `fix.merged`
+    (alarm and SLO notifications go to the webhooks chosen on each alarm or
+    SLO; a grouped alarm message lists them all in `alarms`). JSON
     deliveries carry `X-Sentinel-Event` and, with a secret,
     `X-Sentinel-Signature: sha256=<HMAC-SHA256(secret, body)>`. Failures (network,
     429, 5xx) are retried twice and every delivery is logged in the UI.
   - **AI** – provider, model and timeout for issue analysis, with a test button.
 
 Logs and metric points are kept for `LOG_RETENTION` / `METRIC_RETENTION`
-(default 7 days) and pruned every 10 minutes. Everything is redacted before
+(default 7 days), stored spans for `TRACE_RETENTION` (default 3 days), and
+pruned every 10 minutes. Request statistics follow `METRIC_RETENTION`. Everything is redacted before
 it is stored.
 
 ### Signing in
@@ -123,7 +281,9 @@ Sessions are HttpOnly cookies (7 days). State-changing API calls require an
 2. **Callback URL**: `$PUBLIC_URL/auth/callback`. **Setup URL**:
    `$PUBLIC_URL/github/setup` with "Redirect on update" ticked. Webhook: not
    needed (untick "Active").
-3. Permissions. Repository: **Issues: Read and write**, **Metadata: Read-only**.
+3. Permissions. Repository: **Issues: Read and write**, **Metadata: Read-only**
+   (and **Contents** and **Pull requests: Read and write** for the fixer
+   container, see *Automated fixes*).
    Organization: **Members: Read-only** (only needed for `ALLOWED_ORG`).
 4. Generate a private key and a client secret, then start Sentinel with
    `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_FILE`, `GITHUB_APP_CLIENT_ID`,
@@ -162,8 +322,10 @@ go run ./cmd/sentinel-demo -endpoint http://localhost:4318
 ```
 
 Then open http://localhost:8080. `cmd/sentinel-demo` sends logs (with a
-backfilled history), error spans and metrics for four fake services; one of
-them stops after 90s to show outage detection.
+backfilled history), traces (checkout calling billing, an N+1 on
+`/api/products`) and metrics for four fake services; one of them stops after
+90s to show outage detection, and halfway through checkout ships release
+1.5.0, which is slower.
 
 For UI work, `npm --prefix web run dev` serves the React app with hot reload
 and proxies `/api` to a Sentinel on :8080 (`SENTINEL_URL` to change).
@@ -295,7 +457,14 @@ All configuration is via environment variables. Durations accept Go syntax
 | `ALLOWED_USERS` | – | Comma-separated GitHub logins allowed to sign in |
 | `ALLOWED_ORG` | – | GitHub organization whose members may sign in |
 | `LOG_RETENTION` | `168h` | How long log lines are kept |
-| `METRIC_RETENTION` | `168h` | How long metric points are kept |
+| `METRIC_RETENTION` | `168h` | How long metric points (and request statistics, uptime results) are kept |
+| `TRACE_RETENTION` | `72h` | How long stored spans are kept |
+| `TRACE_SAMPLE_RATE` | `1` | Share of traces stored (0–1, decided per trace id); spans with errors are always stored, request statistics count every span |
+| `PERF_SLOW_P95` | `2s` | p95 of an operation that files a slow-endpoint issue; `0` disables |
+| `AUTOFIX_MODE` | `actions` | Where Claude Code fixes issues: `actions` (a workflow in each repository) or `fixer` (the fixer container) |
+| `AUTOFIX_LABEL` | `sentinel-autofix` | Label that starts the fix workflow in the repository (`actions` mode) |
+| `FIXER_TOKEN` | – | Shared secret of Sentinel and the fixer container; enables it for fixes (`AUTOFIX_MODE=fixer`) and investigations (AI provider `claude-code`) |
+| `PERF_N_PLUS_ONE` | `10` | Identical database calls under one span that file an N+1 issue; `0` disables |
 | `MIN_SEVERITY` | `17` | Lowest log `severity_number` treated as an error |
 | `TICK_INTERVAL` | `10s` | Reporter loop interval |
 | `SETTLE_WINDOW` | `60s` | Wait after a group's first event before filing |
@@ -312,7 +481,7 @@ All configuration is via environment variables. Durations accept Go syntax
 | `GITHUB_LABELS` | – | Comma-separated labels for every new issue, e.g. `sentinel,bug` |
 | `GITHUB_API_URL` / `GITHUB_WEB_URL` | `https://api.github.com` / `https://github.com` | For GitHub Enterprise |
 | `DRY_RUN` | `false` | Log GitHub operations instead of performing them |
-| `AI_PROVIDER` | `anthropic` | `anthropic`, `openai` (any OpenAI-compatible server) or `none` |
+| `AI_PROVIDER` | `anthropic` | `anthropic`, `openai` (any OpenAI-compatible server), `claude-code` (the fixer container, see *Automated fixes*) or `none` |
 | `AI_MODEL` | `claude-haiku-5-5` for anthropic | Model name; required for `openai` |
 | `ANTHROPIC_API_KEY` | – | Anthropic key (the SDK's other credential sources also work) |
 | `OPENAI_BASE_URL` | `http://localhost:11434/v1` | OpenAI-compatible base URL (Ollama default) |

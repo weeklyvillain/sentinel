@@ -7,6 +7,9 @@ const EVENT_HELP: Record<string, string> = {
   "issue.created": "A new GitHub issue was filed",
   "issue.regression": "A closed issue was reopened because the error came back",
   "issue.updated": "An update comment was posted (at most once per update interval)",
+  "fix.requested": "The fix workflow was asked to fix an issue",
+  "fix.opened": "The fix workflow opened a pull request for an issue",
+  "fix.merged": "A fix pull request was merged",
   "service.down": "A service stopped sending telemetry",
   "service.recovered": "A down service is sending again",
 };

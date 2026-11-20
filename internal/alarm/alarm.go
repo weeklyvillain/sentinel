@@ -6,7 +6,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/weeklyvillain/sentinel/internal/notify"
@@ -20,6 +22,9 @@ type Evaluator struct {
 	Log      *slog.Logger
 	Now      func() time.Time
 	Interval time.Duration // default 15s
+
+	sloMu sync.Mutex
+	sloAt time.Time
 }
 
 func (e *Evaluator) now() time.Time {
@@ -54,7 +59,10 @@ func (e *Evaluator) Run(ctx context.Context) {
 	}
 }
 
-// Tick evaluates every enabled alarm once.
+// Tick evaluates every enabled alarm once. An alarm with For set goes
+// through "pending" and fires only when its condition held that long.
+// Alarms that change state in the same pass and notify the same webhooks
+// are sent as one grouped notification; silenced alarms notify nobody.
 func (e *Evaluator) Tick(ctx context.Context) {
 	alarms, err := e.Store.ListAlarms(ctx)
 	if err != nil {
@@ -62,6 +70,7 @@ func (e *Evaluator) Tick(ctx context.Context) {
 		return
 	}
 	now := e.now()
+	var out []transition
 	for _, a := range alarms {
 		if !a.Enabled {
 			continue
@@ -71,34 +80,124 @@ func (e *Evaluator) Tick(ctx context.Context) {
 			e.log().Warn("alarm evaluation failed", "alarm", a.Name, "err", err)
 			continue
 		}
-		state := store.AlarmOK
-		if res.Firing {
-			state = store.AlarmFiring
+		state := NextState(a, res.Firing, now)
+		if res.Firing && a.PendingSince.IsZero() {
+			if err := e.Store.SetAlarmPending(ctx, a.ID, now); err != nil {
+				e.log().Error("record alarm", "alarm", a.Name, "err", err)
+			}
+		} else if !res.Firing && !a.PendingSince.IsZero() {
+			if err := e.Store.SetAlarmPending(ctx, a.ID, time.Time{}); err != nil {
+				e.log().Error("record alarm", "alarm", a.Name, "err", err)
+			}
 		}
 		changed := state != a.State
-		if err := e.Store.RecordAlarmEval(ctx, a.ID, state, res.Value, changed, res.Message, now); err != nil {
+		msg := res.Message
+		if state == store.AlarmPending {
+			msg = "Pending — " + msg
+		}
+		if err := e.Store.RecordAlarmEval(ctx, a.ID, state, res.Value, changed, msg, now); err != nil {
 			e.log().Error("record alarm", "alarm", a.Name, "err", err)
 			continue
 		}
 		if !changed {
 			continue
 		}
-		typ := notify.AlarmResolved
-		if res.Firing {
-			typ = notify.AlarmFiring
-		}
 		e.log().Info("alarm state changed", "alarm", a.Name, "state", state, "value", res.Value)
-		if e.Notify != nil {
-			ids := a.WebhookIDs
-			if ids == nil {
-				ids = []int64{}
-			}
-			e.Notify.Notify(notify.Event{
-				Type: typ, Time: now, Service: a.Service, Message: res.Message, WebhookIDs: ids,
-				Alarm: &notify.AlarmInfo{ID: a.ID, Name: a.Name, State: state, Value: res.Value, Op: a.Op, Threshold: a.Threshold},
-			})
+		// Only firing and recovering from firing are worth a message.
+		if state != store.AlarmFiring && a.State != store.AlarmFiring {
+			continue
+		}
+		if sl, ok, err := e.Store.Silenced(ctx, a.Service, a.ID, now); err == nil && ok {
+			e.log().Info("alarm notification silenced", "alarm", a.Name, "silence", sl.ID)
+			continue
+		}
+		out = append(out, transition{a: a, state: state, res: res})
+	}
+	if e.Notify != nil {
+		for _, ev := range groupTransitions(out, now) {
+			e.Notify.Notify(ev)
 		}
 	}
+	e.tickSLOs(ctx, now)
+}
+
+// NextState is an alarm's state after an evaluation.
+func NextState(a store.Alarm, condition bool, now time.Time) string {
+	switch {
+	case !condition:
+		return store.AlarmOK
+	case a.State == store.AlarmFiring || a.ForS <= 0:
+		return store.AlarmFiring
+	case !a.PendingSince.IsZero() && now.Sub(a.PendingSince) >= time.Duration(a.ForS)*time.Second:
+		return store.AlarmFiring
+	}
+	return store.AlarmPending
+}
+
+type transition struct {
+	a     store.Alarm
+	state string
+	res   Result
+}
+
+func alarmInfo(t transition) notify.AlarmInfo {
+	return notify.AlarmInfo{ID: t.a.ID, Name: t.a.Name, State: t.state, Value: t.res.Value, Op: t.a.Op, Threshold: t.a.Threshold}
+}
+
+// groupTransitions builds one notification per set of target webhooks.
+func groupTransitions(ts []transition, now time.Time) []notify.Event {
+	byHooks := map[string][]transition{}
+	var order []string
+	for _, t := range ts {
+		ids := append([]int64(nil), t.a.WebhookIDs...)
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		k := fmt.Sprint(ids)
+		if _, ok := byHooks[k]; !ok {
+			order = append(order, k)
+		}
+		byHooks[k] = append(byHooks[k], t)
+	}
+	var out []notify.Event
+	for _, k := range order {
+		g := byHooks[k]
+		ids := g[0].a.WebhookIDs
+		if ids == nil {
+			ids = []int64{}
+		}
+		if len(g) == 1 {
+			t := g[0]
+			typ := notify.AlarmResolved
+			if t.state == store.AlarmFiring {
+				typ = notify.AlarmFiring
+			}
+			info := alarmInfo(t)
+			out = append(out, notify.Event{Type: typ, Time: now, Service: t.a.Service, Message: t.res.Message, WebhookIDs: ids, Alarm: &info})
+			continue
+		}
+		typ := notify.AlarmResolved
+		var firing, resolved []string
+		var infos []notify.AlarmInfo
+		var lines []string
+		for _, t := range g {
+			infos = append(infos, alarmInfo(t))
+			lines = append(lines, "• "+t.res.Message)
+			if t.state == store.AlarmFiring {
+				typ = notify.AlarmFiring
+				firing = append(firing, t.a.Name)
+			} else {
+				resolved = append(resolved, t.a.Name)
+			}
+		}
+		head := fmt.Sprintf("%d alarms changed state", len(g))
+		if len(firing) > 0 {
+			head += fmt.Sprintf(" — firing: %s", strings.Join(firing, ", "))
+		}
+		if len(resolved) > 0 {
+			head += fmt.Sprintf(" — resolved: %s", strings.Join(resolved, ", "))
+		}
+		out = append(out, notify.Event{Type: typ, Time: now, Message: head + "\n" + strings.Join(lines, "\n"), WebhookIDs: ids, Alarms: infos})
+	}
+	return out
 }
 
 // Result of evaluating one alarm.
@@ -138,7 +237,7 @@ func Validate(a store.Alarm) error {
 			return fmt.Errorf("metric is required")
 		}
 		switch a.Agg {
-		case "avg", "sum", "max", "min", "count", "last":
+		case "avg", "sum", "max", "min", "count", "last", "p50", "p90", "p95", "p99":
 		default:
 			return fmt.Errorf("unknown aggregation %q", a.Agg)
 		}
@@ -154,6 +253,9 @@ func Validate(a store.Alarm) error {
 		}
 		if a.WindowS < 10 || a.WindowS > 7*24*3600 {
 			return fmt.Errorf("window must be between 10s and 7d")
+		}
+		if a.ForS < 0 || a.ForS > 24*3600 {
+			return fmt.Errorf("for must be between 0 and 24h")
 		}
 	}
 	return nil

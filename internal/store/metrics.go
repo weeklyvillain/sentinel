@@ -19,7 +19,24 @@ type MetricPoint struct {
 	Desc    string
 	Attrs   string // canonical "k=v,k=v"
 	Value   float64
+	// Histograms: bucket upper bounds and the counts of this interval
+	// (len(Counts) == len(Bounds)+1, the last bucket is +Inf).
+	Bounds []float64
+	Counts []uint64
 }
+
+const schemaMetricHist = `
+CREATE TABLE IF NOT EXISTS metric_hist (
+	ts INTEGER NOT NULL,
+	service TEXT NOT NULL,
+	name TEXT NOT NULL,
+	attrs TEXT NOT NULL DEFAULT '',
+	bounds TEXT NOT NULL,
+	counts TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS metric_hist_series ON metric_hist(name, ts);
+CREATE INDEX IF NOT EXISTS metric_hist_ts ON metric_hist(ts);
+`
 
 // MetricSeries describes a metric a service reports.
 type MetricSeries struct {
@@ -48,9 +65,21 @@ func (s *Store) InsertMetrics(ctx context.Context, pts []MetricPoint) error {
 	defer ins.Close()
 	type key struct{ s, n string }
 	seen := map[key]MetricPoint{}
+	var hist *sql.Stmt
 	for _, p := range pts {
 		if _, err := ins.ExecContext(ctx, ms(p.Time), p.Service, p.Name, p.Attrs, p.Value); err != nil {
 			return err
+		}
+		if len(p.Counts) > 0 {
+			if hist == nil {
+				if hist, err = tx.PrepareContext(ctx, `INSERT INTO metric_hist (ts, service, name, attrs, bounds, counts) VALUES (?, ?, ?, ?, ?, ?)`); err != nil {
+					return err
+				}
+				defer hist.Close()
+			}
+			if _, err := hist.ExecContext(ctx, ms(p.Time), p.Service, p.Name, p.Attrs, joinFloats(p.Bounds), joinUints(p.Counts)); err != nil {
+				return err
+			}
 		}
 		k := key{p.Service, p.Name}
 		if prev, ok := seen[k]; !ok || p.Time.After(prev.Time) {
@@ -197,6 +226,9 @@ func (s *Store) MetricSeriesQuery(ctx context.Context, service, name, agg string
 
 // MetricAggregate returns agg(value) over a window (for alarms). ok=false when there is no data.
 func (s *Store) MetricAggregate(ctx context.Context, service, name, agg string, from, to time.Time) (float64, bool, error) {
+	if q, ok := histAggs[agg]; ok && q > 0 {
+		return s.histAggregate(ctx, service, name, q, from, to)
+	}
 	expr, okA := aggs[agg]
 	if !okA {
 		return 0, false, fmt.Errorf("unknown aggregation %q", agg)

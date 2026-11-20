@@ -10,6 +10,9 @@ const (
 	KindLog  Kind = "log"
 	KindSpan Kind = "span"
 	KindDown Kind = "down"
+	// KindPerf is a performance problem found in traces (slow endpoint,
+	// N+1 queries, latency regression).
+	KindPerf Kind = "perf"
 )
 
 // FingerprintAttr lets a producer override grouping explicitly.
@@ -20,6 +23,7 @@ type Event struct {
 	Kind        Kind              `json:"kind"`
 	Service     string            `json:"service"`
 	Environment string            `json:"environment,omitempty"`
+	Release     string            `json:"release,omitempty"` // service.version
 	Time        time.Time         `json:"time"`
 	Severity    string            `json:"severity,omitempty"`
 	Message     string            `json:"message,omitempty"`

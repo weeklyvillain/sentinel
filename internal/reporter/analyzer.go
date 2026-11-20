@@ -78,7 +78,18 @@ func (a *Analyzer) Run(ctx context.Context) {
 }
 
 // Step runs the oldest queued job, if any. It reports whether there was one.
+// With the claude-code provider the fixer container does the jobs; Step only
+// gives up on the ones it does not get to.
 func (a *Analyzer) Step(ctx context.Context) (bool, error) {
+	if remoteAI(a.AI) {
+		now := a.now()
+		if n, err := a.Store.ExpireAnalyses(ctx, now.Add(-analysisQueueWait), now.Add(-analysisRunWait), now); err != nil {
+			return false, err
+		} else if n > 0 {
+			a.log().Warn("analyses the fixer did not finish in time; their issues use the template", "count", n)
+		}
+		return false, nil
+	}
 	job, ok, err := a.Store.ClaimAnalysis(ctx, a.AI.Name(), a.now())
 	if err != nil || !ok {
 		return false, err

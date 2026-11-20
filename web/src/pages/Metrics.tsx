@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api, MetricSeriesInfo, qs, Series } from "../api";
 import { Legend, SeriesChart } from "../components/charts";
-import { Empty, ErrorNote, Icon, Loading, Modal, RangePicker, useAction, useAsync } from "../components/ui";
+import { CopyLink, Empty, ErrorNote, Icon, Loading, Modal, RangePicker, useAction, useAsync } from "../components/ui";
 import { newId, Panel, PanelQuery, Unit } from "../dashboards/model";
 import type { Dashboard } from "./Dashboards";
 import { useServices } from "../shared";
@@ -53,6 +53,7 @@ export default function Metrics() {
       <div className="page-head">
         <span className="sub">Every metric your services send. Counters are shown per interval. Add a chart to a dashboard to keep it.</span>
         <div className="actions">
+          <CopyLink />
           <select value={service} onChange={(e) => set({ service: e.target.value, m: "" })} aria-label="Service">
             <option value="">All services</option>
             {(svcs.data ?? []).map((s) => (

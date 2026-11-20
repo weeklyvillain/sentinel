@@ -47,6 +47,53 @@ type Group struct {
 	IssueCreatedAt    time.Time  `json:"issue_created_at,omitzero"`
 	Repo              string     `json:"repo,omitempty"`
 	BlockReason       string     `json:"block_reason,omitempty"`
+	// Releases (service.version): where the group first and last appeared,
+	// and the release it came back in after being resolved.
+	FirstRelease     string `json:"first_release,omitempty"`
+	LastRelease      string `json:"last_release,omitempty"`
+	RegressedRelease string `json:"regressed_release,omitempty"`
+	// Users is the number of distinct users affected (capped at MaxTagValues
+	// for "user").
+	Users int64 `json:"users"`
+	// Snooze: an ignored group comes back when one of these is reached.
+	SnoozeUntil   time.Time `json:"snooze_until,omitzero"`
+	SnoozeCount   int64     `json:"snooze_count,omitempty"`   // total count that ends the snooze
+	SnoozeRelease string    `json:"snooze_release,omitempty"` // ends when a release other than this one sends it
+	// Merged is how many other fingerprints were merged into this group.
+	Merged int `json:"merged,omitempty"`
+	// Automated fix: the fix workflow in the repository was asked to fix
+	// this issue, and the pull request it opened.
+	FixState       string    `json:"fix_state,omitempty"` // see Fix* constants
+	FixRequestedAt time.Time `json:"fix_requested_at,omitzero"`
+	FixAttempts    int       `json:"fix_attempts,omitempty"`
+	FixPRNumber    int       `json:"fix_pr_number,omitempty"`
+	FixPRURL       string    `json:"fix_pr_url,omitempty"`
+	FixCheckedAt   time.Time `json:"fix_checked_at,omitzero"`
+	FixStartedAt   time.Time `json:"fix_started_at,omitzero"`
+	// FixSummary is the fixer's explanation or error.
+	FixSummary string `json:"fix_summary,omitempty"`
+	// Triage from the investigation: fix | ignore | investigate.
+	TriageVerdict  string `json:"triage_verdict,omitempty"`
+	TriageSeverity string `json:"triage_severity,omitempty"`
+	TriageReason   string `json:"triage_reason,omitempty"`
+}
+
+// Fix states of a group.
+const (
+	FixQueued    = "queued"    // waiting for the fixer container
+	FixRunning   = "running"   // the fixer is working on it
+	FixNoFix     = "no_fix"    // the fixer found no confident fix
+	FixFailed    = "failed"    // the fixer failed (clone, agent, push)
+	FixRequested = "requested" // label added; waiting for the workflow's PR
+	FixPROpen    = "pr_open"   // a pull request references the issue
+	FixMerged    = "merged"    // that pull request was merged
+	FixPRClosed  = "pr_closed" // closed without merging
+	FixNoPR      = "no_pr"     // no pull request appeared in time
+)
+
+// Snoozed reports whether an ignored group will come back by itself.
+func (g *Group) Snoozed() bool {
+	return g.Status == StatusIgnored && (!g.SnoozeUntil.IsZero() || g.SnoozeCount > 0 || g.SnoozeRelease != "")
 }
 
 // NewSinceReport is the number of events since the last issue/comment.
@@ -75,6 +122,9 @@ type Service struct {
 	// Watch: flag the service as down when it stops sending telemetry for
 	// DOWN_AFTER (opt-in).
 	Watch bool `json:"watch"`
+	// Autofix: ask the repository's fix workflow to fix every new issue
+	// (opt-in).
+	Autofix bool `json:"autofix"`
 }
 
 // Store wraps the SQLite database.
@@ -192,16 +242,29 @@ func (s *Store) RecordEvent(ctx context.Context, fp string, e event.Event) (Grou
 	if len(title) > 200 {
 		title = title[:200]
 	}
+	orig := fp
+	// A fingerprint merged into another group records there.
+	var target string
+	if err := tx.QueryRowContext(ctx, `SELECT g.fingerprint FROM group_aliases a JOIN groups g ON g.id = a.group_id WHERE a.fingerprint = ?`, fp).Scan(&target); err == nil {
+		fp = target
+		if _, err := tx.ExecContext(ctx, `UPDATE group_aliases SET count = count + 1 WHERE fingerprint = ?`, orig); err != nil {
+			return Group{}, err
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return Group{}, err
+	}
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO groups (fingerprint, service, env, kind, title, first_seen, last_seen, count, status)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'pending')
+		INSERT INTO groups (fingerprint, service, env, kind, title, first_seen, last_seen, count, status, first_release, last_release)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'pending', ?, ?)
 		ON CONFLICT(fingerprint) DO UPDATE SET
 			count = count + 1,
 			last_seen = MAX(last_seen, excluded.last_seen),
 			env = CASE WHEN env = '' THEN excluded.env ELSE env END,
+			first_release = CASE WHEN first_release = '' THEN excluded.first_release ELSE first_release END,
+			last_release = CASE WHEN excluded.last_release <> '' THEN excluded.last_release ELSE last_release END,
 			-- a group resolved before any issue existed starts over as pending
 			status = CASE WHEN status = 'resolved' AND issue_number = 0 THEN 'pending' ELSE status END`,
-		fp, e.Service, e.Environment, string(e.Kind), title, now, now)
+		fp, e.Service, e.Environment, string(e.Kind), title, now, now, e.Release, e.Release)
 	if err != nil {
 		return Group{}, fmt.Errorf("upsert group: %w", err)
 	}
@@ -213,8 +276,11 @@ func (s *Store) RecordEvent(ctx context.Context, fp string, e event.Event) (Grou
 	if err != nil {
 		return Group{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO samples (group_id, ts, data) VALUES (?, ?, ?)`, g.ID, now, string(data)); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO samples (group_id, ts, data, fingerprint) VALUES (?, ?, ?, ?)`, g.ID, now, string(data), orig); err != nil {
 		return Group{}, fmt.Errorf("insert sample: %w", err)
+	}
+	if err := recordTags(ctx, tx, g.ID, TagsFor(e), now); err != nil {
+		return Group{}, fmt.Errorf("record tags: %w", err)
 	}
 	// Keep the first sample plus the latest KeepLatestSamples.
 	if _, err := tx.ExecContext(ctx, `
@@ -228,19 +294,29 @@ func (s *Store) RecordEvent(ctx context.Context, fp string, e event.Event) (Grou
 }
 
 const groupCols = `SELECT id, fingerprint, service, env, kind, title, first_seen, last_seen, count,
-	count_at_last_report, status, issue_number, issue_url, last_reported_at, last_checked_at, issue_created_at, repo, block_reason FROM groups`
+	count_at_last_report, status, issue_number, issue_url, last_reported_at, last_checked_at, issue_created_at, repo, block_reason,
+	first_release, last_release, regressed_release, snooze_until, snooze_count, snooze_release,
+	(SELECT COUNT(*) FROM group_tags t WHERE t.group_id = groups.id AND t.key = 'user'),
+	(SELECT COUNT(*) FROM group_aliases a WHERE a.group_id = groups.id),
+	fix_state, fix_requested_at, fix_attempts, fix_pr_number, fix_pr_url, fix_checked_at, fix_started_at, fix_summary,
+	triage_verdict, triage_severity, triage_reason FROM groups`
 
 type scanner interface{ Scan(...any) error }
 
 func scanGroup(r scanner) (Group, error) {
 	var g Group
 	var kind string
-	var first, last, rep, chk, created int64
+	var first, last, rep, chk, created, snooze, fixReq, fixChk, fixStart int64
 	err := r.Scan(&g.ID, &g.Fingerprint, &g.Service, &g.Env, &kind, &g.Title, &first, &last, &g.Count,
-		&g.CountAtLastReport, &g.Status, &g.IssueNumber, &g.IssueURL, &rep, &chk, &created, &g.Repo, &g.BlockReason)
+		&g.CountAtLastReport, &g.Status, &g.IssueNumber, &g.IssueURL, &rep, &chk, &created, &g.Repo, &g.BlockReason,
+		&g.FirstRelease, &g.LastRelease, &g.RegressedRelease, &snooze, &g.SnoozeCount, &g.SnoozeRelease, &g.Users, &g.Merged,
+		&g.FixState, &fixReq, &g.FixAttempts, &g.FixPRNumber, &g.FixPRURL, &fixChk, &fixStart, &g.FixSummary,
+		&g.TriageVerdict, &g.TriageSeverity, &g.TriageReason)
 	if err != nil {
 		return g, err
 	}
+	g.SnoozeUntil = fromMs(snooze)
+	g.FixRequestedAt, g.FixCheckedAt, g.FixStartedAt = fromMs(fixReq), fromMs(fixChk), fromMs(fixStart)
 	g.Kind = event.Kind(kind)
 	g.FirstSeen, g.LastSeen = fromMs(first), fromMs(last)
 	g.LastReportedAt, g.LastCheckedAt, g.IssueCreatedAt = fromMs(rep), fromMs(chk), fromMs(created)
@@ -374,7 +450,7 @@ func (s *Store) TouchService(ctx context.Context, name, env string, now time.Tim
 
 // ListServices returns all known services.
 func (s *Store) ListServices(ctx context.Context) ([]Service, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT name, env, last_seen, down, down_since, recovered_at, repo, labels, managed, description, issues, watch FROM services ORDER BY name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT name, env, last_seen, down, down_since, recovered_at, repo, labels, managed, description, issues, watch, autofix FROM services ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -383,12 +459,12 @@ func (s *Store) ListServices(ctx context.Context) ([]Service, error) {
 	for rows.Next() {
 		var sv Service
 		var last, since, rec int64
-		var down, managed, issues, watch int
+		var down, managed, issues, watch, autofix int
 		var labels string
-		if err := rows.Scan(&sv.Name, &sv.Env, &last, &down, &since, &rec, &sv.Repo, &labels, &managed, &sv.Description, &issues, &watch); err != nil {
+		if err := rows.Scan(&sv.Name, &sv.Env, &last, &down, &since, &rec, &sv.Repo, &labels, &managed, &sv.Description, &issues, &watch, &autofix); err != nil {
 			return nil, err
 		}
-		sv.Issues, sv.Watch = issues == 1, watch == 1
+		sv.Issues, sv.Watch, sv.Autofix = issues == 1, watch == 1, autofix == 1
 		sv.Labels = splitLabels(labels)
 		sv.Managed = managed == 1
 		sv.LastSeen, sv.DownSince, sv.RecoveredAt = fromMs(last), fromMs(since), fromMs(rec)
@@ -466,8 +542,9 @@ func (s *Store) UpsertServiceConfig(ctx context.Context, c ServiceConfig) error 
 
 // ServiceFlags are the per-service switches; nil leaves a flag unchanged.
 type ServiceFlags struct {
-	Issues *bool `json:"issues"`
-	Watch  *bool `json:"watch"`
+	Issues  *bool `json:"issues"`
+	Watch   *bool `json:"watch"`
+	Autofix *bool `json:"autofix"`
 }
 
 // SetServiceFlags turns issue creation and down detection on or off. A
@@ -483,7 +560,7 @@ func (s *Store) SetServiceFlags(ctx context.Context, name string, f ServiceFlags
 		}
 		return "0"
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE services SET issues = `+b(f.Issues, "issues")+`, watch = `+b(f.Watch, "watch")+` WHERE name = ?`, name)
+	res, err := s.db.ExecContext(ctx, `UPDATE services SET issues = `+b(f.Issues, "issues")+`, watch = `+b(f.Watch, "watch")+`, autofix = `+b(f.Autofix, "autofix")+` WHERE name = ?`, name)
 	if err != nil {
 		return err
 	}

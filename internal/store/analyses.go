@@ -136,6 +136,19 @@ func (s *Store) RetryAnalysis(ctx context.Context, id int64, now time.Time) erro
 	return nil
 }
 
+// ExpireAnalyses fails jobs queued before queuedBefore or running since
+// before runningBefore (the fixer is not connected, or died), so their issues
+// are filed with the template instead of waiting forever.
+func (s *Store) ExpireAnalyses(ctx context.Context, queuedBefore, runningBefore time.Time, now time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE analyses SET status = 'failed', finished_at = ?,
+		error = CASE status WHEN 'queued' THEN 'the fixer did not pick it up (is it connected?)' ELSE 'the fixer did not report back' END
+		WHERE (status = 'queued' AND queued_at < ?) OR (status = 'running' AND started_at < ?)`, ms(now), ms(queuedBefore), ms(runningBefore))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // RequeueRunning puts jobs that were running when Sentinel stopped back in
 // the queue.
 func (s *Store) RequeueRunning(ctx context.Context) error {

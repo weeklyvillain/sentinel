@@ -32,12 +32,17 @@ const (
 	CheckRecovered   = "check.recovered"
 	AlarmFiring      = "alarm.firing"
 	AlarmResolved    = "alarm.resolved"
+	FixRequested     = "fix.requested"
+	FixOpened        = "fix.opened"
+	FixMerged        = "fix.merged"
+	SLOBurn          = "slo.burn"
+	SLORecovered     = "slo.recovered"
 	Test             = "test"
 )
 
 // EventTypes lists the subscribable event types (alarm events go to the
 // webhooks chosen on each alarm).
-var EventTypes = []string{IssueCreated, IssueRegression, IssueUpdated, ServiceDown, ServiceRecovered, CheckDown, CheckRecovered}
+var EventTypes = []string{IssueCreated, IssueRegression, IssueUpdated, FixRequested, FixOpened, FixMerged, ServiceDown, ServiceRecovered, CheckDown, CheckRecovered}
 
 // GroupInfo summarizes an error group.
 type GroupInfo struct {
@@ -67,6 +72,17 @@ type AlarmInfo struct {
 	Threshold float64 `json:"threshold"`
 }
 
+// SLOInfo describes an SLO state change.
+type SLOInfo struct {
+	ID              int64   `json:"id"`
+	Name            string  `json:"name"`
+	State           string  `json:"state"`
+	Objective       float64 `json:"objective"`
+	SLI             float64 `json:"sli"`
+	BudgetRemaining float64 `json:"budget_remaining"`
+	BurnRate        float64 `json:"burn_rate"`
+}
+
 // Event is the webhook payload (format "json").
 type Event struct {
 	Type    string     `json:"event"`
@@ -76,6 +92,10 @@ type Event struct {
 	Group   *GroupInfo `json:"group,omitempty"`
 	Issue   *IssueInfo `json:"issue,omitempty"`
 	Alarm   *AlarmInfo `json:"alarm,omitempty"`
+	// Alarms lists every alarm of a grouped notification (several alarms
+	// that changed state in the same evaluation, sent as one message).
+	Alarms []AlarmInfo `json:"alarms,omitempty"`
+	SLO    *SLOInfo    `json:"slo,omitempty"`
 	// WebhookIDs, when non-nil, targets these webhooks instead of routing by subscription.
 	WebhookIDs []int64 `json:"-"`
 }
@@ -156,6 +176,13 @@ func (d *Dispatcher) Drain(ctx context.Context) {
 }
 
 func (d *Dispatcher) dispatch(ctx context.Context, ev Event) {
+	// Alarms and SLOs check silences themselves (per rule, before grouping).
+	if ev.Type != Test && ev.Alarm == nil && ev.Alarms == nil && ev.SLO == nil {
+		if sl, ok, err := d.Store.Silenced(ctx, ev.Service, 0, time.Now()); err == nil && ok {
+			d.Log.Info("notification silenced", "event", ev.Type, "service", ev.Service, "silence", sl.ID)
+			return
+		}
+	}
 	hooks, err := d.Store.ListWebhooks(ctx)
 	if err != nil {
 		d.Log.Error("list webhooks", "err", err)
@@ -286,7 +313,7 @@ func marshal(v any) ([]byte, error) {
 func chatText(ev Event, link func(url, label string) string) string {
 	icon := map[string]string{
 		IssueCreated: "🆕", IssueRegression: "🔁", IssueUpdated: "📈", ServiceDown: "🔴", ServiceRecovered: "🟢", CheckDown: "🔴", CheckRecovered: "🟢",
-		AlarmFiring: "🚨", AlarmResolved: "✅", Test: "🧪",
+		AlarmFiring: "🚨", AlarmResolved: "✅", FixRequested: "🤖", FixOpened: "🛠️", FixMerged: "✅", SLOBurn: "🔥", SLORecovered: "✅", Test: "🧪",
 	}[ev.Type]
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s *Sentinel* — %s", icon, ev.Message)

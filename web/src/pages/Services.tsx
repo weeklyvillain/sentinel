@@ -12,7 +12,7 @@ export default function Services() {
   const gh = useAsync(() => api.get<GitHubStatus>("/api/github"), []);
   const [editing, setEditing] = useState<Partial<Service> | null>(null);
 
-  const flag = async (s: Service, patch: { issues?: boolean; watch?: boolean }, ok: string) => {
+  const flag = async (s: Service, patch: { issues?: boolean; watch?: boolean; autofix?: boolean }, ok: string) => {
     if (await run(() => api.patch(`/api/services/${encodeURIComponent(s.name)}`, patch), ok)) svcs.reload();
   };
   const defaultRepo = gh.data?.default_repo || gh.data?.env_default_repo;
@@ -45,6 +45,7 @@ export default function Services() {
                 <th className="num">Active groups</th>
                 <th title="File GitHub issues for this service's errors">Issues</th>
                 <th title={`Flag the service as down after ${me.info.down_after} without telemetry`}>Watch</th>
+                <th title="Ask the repository's fix workflow to fix every new issue and open a pull request">Auto-fix</th>
                 <th />
               </tr>
             </thead>
@@ -84,6 +85,19 @@ export default function Services() {
                       }
                     />
                   </td>
+                  <td>
+                    <Switch
+                      checked={s.autofix}
+                      label={`Auto-fix for ${s.name}`}
+                      onChange={(v) =>
+                        flag(
+                          s,
+                          { autofix: v },
+                          v ? `Auto-fix on for ${s.name}: new issues start the fix workflow in its repository` : `Auto-fix off for ${s.name}`,
+                        )
+                      }
+                    />
+                  </td>
                   <td className="nowrap" style={{ textAlign: "right" }}>
                     <Link className="btn small" to={`/logs?service=${encodeURIComponent(s.name)}`}>
                       Logs
@@ -100,8 +114,9 @@ export default function Services() {
       </div>
       <p className="small faint">
         <strong>Watch</strong>: a watched service that sends nothing for {me.info.down_after} is flagged down, gets an issue and sends <code>service.down</code>{" "}
-        to webhooks. Unwatched services are never flagged for being quiet. Repositories must be authorized under{" "}
-        <Link to="/settings/github">Settings → GitHub</Link>.
+        to webhooks. Unwatched services are never flagged for being quiet. <strong>Auto-fix</strong>: each new issue gets the fix label, which starts
+        Claude Code in the repository's GitHub Actions to open a pull request; the repository needs the workflow from{" "}
+        <Link to="/settings/github">Settings → GitHub</Link>. Repositories must be authorized there too.
       </p>
       {editing && (
         <ServiceForm
