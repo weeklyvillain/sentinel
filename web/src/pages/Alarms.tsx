@@ -14,10 +14,11 @@ const KIND_LABEL: Record<AlarmKind, string> = {
 function describe(a: Alarm): string {
   const scope = a.service || "any service";
   if (a.kind === "service_down") return `When ${scope} stops sending telemetry (old alarm type)`;
-  if (a.kind === "metric") return `${a.agg}(${a.metric}) ${a.op} ${a.threshold} over ${fmtDuration(a.window_s)} · ${scope}`;
+  const hold = a.for_s ? ` for ${fmtDuration(a.for_s)}` : "";
+  if (a.kind === "metric") return `${a.agg}(${a.metric}) ${a.op} ${a.threshold} over ${fmtDuration(a.window_s)}${hold} · ${scope}`;
   const what = a.query ? `logs matching "${a.query}"` : "log lines";
   const sev = a.min_severity >= 17 ? " (error+)" : a.min_severity >= 13 ? " (warn+)" : "";
-  return `Count of ${what}${sev} ${a.op} ${a.threshold} in ${fmtDuration(a.window_s)} · ${scope}`;
+  return `Count of ${what}${sev} ${a.op} ${a.threshold} in ${fmtDuration(a.window_s)}${hold} · ${scope}`;
 }
 
 export default function Alarms() {
@@ -42,7 +43,10 @@ export default function Alarms() {
   return (
     <>
       <div className="page-head">
-        <span className="sub">Evaluated every 15s; webhooks are notified when an alarm starts firing and when it resolves.</span>
+        <span className="sub">
+          Evaluated every 15s; webhooks are notified when an alarm starts firing and when it resolves. Alarms that change at the same moment are sent as one
+          message; <Link to="/alerts/silences">maintenance windows</Link> mute them.
+        </span>
         <div className="actions">
           <button className="primary" onClick={() => setEditing({})}>
             + New alarm
@@ -82,6 +86,10 @@ export default function Alarms() {
                       <span className="badge">disabled</span>
                     ) : a.state === "firing" ? (
                       <span className="badge bad">● firing</span>
+                    ) : a.state === "pending" ? (
+                      <span className="badge warn" title={`Fires if it still holds after ${fmtDuration(a.for_s)}`}>
+                        pending
+                      </span>
                     ) : (
                       <span className="badge ok">ok</span>
                     )}
@@ -126,7 +134,15 @@ export default function Alarms() {
                   <td className="nowrap muted small" title={fmtFull(e.time)}>
                     {ago(e.time)}
                   </td>
-                  <td className="nowrap">{e.state === "firing" ? <span className="badge bad">firing</span> : <span className="badge ok">resolved</span>}</td>
+                  <td className="nowrap">
+                    {e.state === "firing" ? (
+                      <span className="badge bad">firing</span>
+                    ) : e.state === "pending" ? (
+                      <span className="badge warn">pending</span>
+                    ) : (
+                      <span className="badge ok">resolved</span>
+                    )}
+                  </td>
                   <td className="nowrap">{names.get(e.alarm_id) ?? `#${e.alarm_id}`}</td>
                   <td className="small muted">{e.message}</td>
                 </tr>
@@ -167,6 +183,7 @@ function AlarmForm(props: { initial: Partial<Alarm>; webhooks: Webhook[]; onClos
     op: ">",
     threshold: 10,
     window_s: 300,
+    for_s: 0,
     webhook_ids: [],
     ...props.initial,
   });
@@ -281,7 +298,7 @@ function AlarmForm(props: { initial: Partial<Alarm>; webhooks: Webhook[]; onClos
             <label className="field">
               Aggregation
               <select value={a.agg} onChange={(e) => set({ agg: e.target.value })}>
-                {["avg", "sum", "max", "min", "count", "last"].map((x) => (
+                {["avg", "sum", "max", "min", "count", "last", "p50", "p90", "p95", "p99"].map((x) => (
                   <option key={x}>{x}</option>
                 ))}
               </select>
@@ -316,6 +333,17 @@ function AlarmForm(props: { initial: Partial<Alarm>; webhooks: Webhook[]; onClos
                   </option>
                 ))}
               </select>
+            </label>
+            <label className="field">
+              Fire after
+              <select value={a.for_s ?? 0} onChange={(e) => set({ for_s: +e.target.value })}>
+                {[0, 60, 120, 300, 600, 900, 1800, 3600].map((w) => (
+                  <option key={w} value={w}>
+                    {w === 0 ? "immediately" : `it holds for ${fmtDuration(w)}`}
+                  </option>
+                ))}
+              </select>
+              <span className="help">Until then the alarm is pending and notifies nobody, so short blips do not page.</span>
             </label>
           </>
         )}

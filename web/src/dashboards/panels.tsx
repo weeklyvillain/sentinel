@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { Area, AreaChart, Bar, BarChart, CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { api, qs } from "../api";
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, Line, LineChart, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Annotation, api, qs } from "../api";
+import { rangeParams } from "../components/ui";
 import { colorFor, fmtTime, tickFormatter } from "../util";
-import { formatValue, Panel, PanelData, PanelOptions, reduceSeries, resolveQueries, toneColor, toneFor } from "./model";
+import { formatValue, Panel, PanelData, PanelOptions, reduceSeries, resolveQueries, toneColor, toneFor, VarValues } from "./model";
 
 export const ROW_PX = 110;
 
@@ -14,17 +15,17 @@ const tooltip = {
 };
 
 /** Fetches a panel's data for the range; refetches when tick changes. */
-export function usePanelData(panel: Panel, range: string, service: string, tick: number) {
+export function usePanelData(panel: Panel, range: string, vars: VarValues, tick: number) {
   const [data, setData] = useState<PanelData | null>(null);
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
-  const body = JSON.stringify({ queries: resolveQueries(panel.queries, service), formula: panel.formula || "" });
+  const body = JSON.stringify({ queries: resolveQueries(panel.queries, vars), formula: panel.formula || "" });
   useEffect(() => {
-    if (panel.type === "text" || panel.queries.length === 0) return;
+    if (panel.type === "text" || panel.type === "row" || panel.queries.length === 0) return;
     let live = true;
     setLoading(true);
     api
-      .post<PanelData>(`/api/panel/query${qs({ range })}`, JSON.parse(body))
+      .post<PanelData>(`/api/panel/query${qs(rangeParams(range))}`, JSON.parse(body))
       .then((d) => {
         if (live) {
           setData(d);
@@ -40,9 +41,10 @@ export function usePanelData(panel: Panel, range: string, service: string, tick:
   return { data, error, loading };
 }
 
-export function PanelBody({ panel, data, height }: { panel: Panel; data: PanelData | null; height: number }) {
+export function PanelBody({ panel, data, height, annotations }: { panel: Panel; data: PanelData | null; height: number; annotations?: Annotation[] }) {
   const o = panel.options;
   if (panel.type === "text") return <div className="panel-text">{o.text || ""}</div>;
+  if (panel.type === "row") return null;
   if (!data) return null;
   if (data.series.length === 0) return <div className="panel-empty">No data in this range</div>;
   switch (panel.type) {
@@ -52,12 +54,30 @@ export function PanelBody({ panel, data, height }: { panel: Panel; data: PanelDa
       return <Gauges data={data} o={o} height={height} />;
     case "bar":
       return <BarList data={data} o={o} />;
+    case "table":
+      return <Table data={data} o={o} height={height} />;
+    case "heatmap":
+      return <Heatmap data={data} o={o} height={height} />;
     default:
-      return <TimeSeries data={data} o={o} height={height} />;
+      return <TimeSeries data={data} o={o} height={height} annotations={annotations} />;
   }
 }
 
-function TimeSeries({ data, o, height }: { data: PanelData; o: PanelOptions; height: number }) {
+const ANN_COLOR: Record<Annotation["kind"], string> = { deploy: "var(--accent)", outage: "var(--bad)", alarm: "var(--warn)", slo: "var(--warn)" };
+
+/** The bucket (row key) an instant falls in; undefined outside the chart. */
+function snap(ts: string[], t: string): string | undefined {
+  const x = new Date(t).getTime();
+  if (!ts.length || x < new Date(ts[0]).getTime()) return undefined;
+  let best: string | undefined;
+  for (const k of ts) {
+    if (new Date(k).getTime() <= x) best = k;
+    else break;
+  }
+  return best;
+}
+
+function TimeSeries({ data, o, height, annotations = [] }: { data: PanelData; o: PanelOptions; height: number; annotations?: Annotation[] }) {
   const labels = data.series.map((s) => s.label);
   const rows: Record<string, number | string | null>[] = [];
   data.series.forEach((s, si) =>
@@ -77,6 +97,25 @@ function TimeSeries({ data, o, height }: { data: PanelData; o: PanelOptions; hei
     o.warn !== undefined ? <ReferenceLine key="w" y={o.warn} stroke="var(--warn)" strokeDasharray="4 4" /> : null,
     o.bad !== undefined ? <ReferenceLine key="b" y={o.bad} stroke="var(--bad)" strokeDasharray="4 4" /> : null,
   ];
+  const keys = rows.map((r) => String(r.t));
+  annotations.forEach((a, i) => {
+    const x = snap(keys, a.t);
+    if (!x) return;
+    if (a.end) {
+      const x2 = snap(keys, a.end) ?? keys[keys.length - 1];
+      children.push(<ReferenceArea key={"aa" + i} x1={x} x2={x2} fill={ANN_COLOR[a.kind]} fillOpacity={0.08} stroke="none" />);
+    }
+    children.push(
+      <ReferenceLine
+        key={"a" + i}
+        x={x}
+        stroke={ANN_COLOR[a.kind]}
+        strokeDasharray={a.kind === "deploy" ? undefined : "2 3"}
+        strokeOpacity={0.8}
+        label={a.kind === "deploy" ? { value: "▲", position: "insideBottom", fill: ANN_COLOR[a.kind], fontSize: 9 } : undefined}
+      />,
+    );
+  });
   const stack = o.stack ? "s" : undefined;
   const color = (l: string) => colorFor(l, labels);
   return (
@@ -196,6 +235,86 @@ function Gauges({ data, o, height }: { data: PanelData; o: PanelOptions; height:
       {data.series.slice(0, 8).map((s) => (
         <Gauge key={s.label} value={reduceSeries(s, o.reduce)} o={o} label={many ? s.label : undefined} size={size} />
       ))}
+    </div>
+  );
+}
+
+function Table({ data, o, height }: { data: PanelData; o: PanelOptions; height: number }) {
+  const fmt = (v: number | null) => formatValue(v, o.unit, o.decimals);
+  const rows = data.series.map((s) => ({ label: s.label, vals: [reduceSeries(s, "last"), reduceSeries(s, "avg"), reduceSeries(s, "min"), reduceSeries(s, "max")] }));
+  return (
+    <div style={{ maxHeight: height, overflow: "auto" }}>
+      <table className="panel-table">
+        <thead>
+          <tr>
+            <th>Series</th>
+            <th className="num">Last</th>
+            <th className="num">Avg</th>
+            <th className="num">Min</th>
+            <th className="num">Max</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.label}>
+              <td className="truncate" title={r.label} style={{ maxWidth: 280 }}>
+                {r.label}
+              </td>
+              {r.vals.map((v, i) => {
+                const tone = toneFor(v, o);
+                return (
+                  <td key={i} className="num" style={{ color: tone && tone !== "ok" ? toneColor[tone] : undefined }}>
+                    {fmt(v)}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Series are value buckets (lowest first), points are counts per time bucket. */
+function Heatmap({ data, height }: { data: PanelData; o: PanelOptions; height: number }) {
+  const rows = data.series;
+  const cols = rows[0]?.points.length ?? 0;
+  let max = 0;
+  rows.forEach((s) => s.points.forEach((p) => (max = Math.max(max, p.v ?? 0))));
+  if (!cols || !max) return <div className="panel-empty">No data in this range</div>;
+  const labelW = 62;
+  const h = Math.max(40, height - 18);
+  const cellH = h / rows.length;
+  const fmtT = tickFormatter(data.bucket_ms);
+  return (
+    <div style={{ height }}>
+      <div className="heat">
+        <div className="heat-y" style={{ width: labelW, height: h }}>
+          {rows.map((s, ri) =>
+            rows.length <= 12 || ri % Math.ceil(rows.length / 12) === 0 ? (
+              <span key={s.label} style={{ bottom: ri * cellH + cellH / 2 - 6 }}>
+                {s.label}
+              </span>
+            ) : null,
+          )}
+        </div>
+        <svg className="heat-grid" height={h} viewBox={"0 0 " + cols + " " + rows.length} preserveAspectRatio="none" role="img" aria-label="Heatmap">
+          {rows.map((s, ri) =>
+            s.points.map((p, ci) =>
+              p.v ? (
+                <rect key={ri + "-" + ci} x={ci} y={rows.length - 1 - ri} width={1} height={1} fill="var(--accent)" fillOpacity={0.12 + 0.88 * Math.sqrt(p.v / max)}>
+                  <title>{fmtTime(p.t) + " · " + s.label + ": " + p.v}</title>
+                </rect>
+              ) : null,
+            ),
+          )}
+        </svg>
+      </div>
+      <div className="heat-x" style={{ marginLeft: labelW }}>
+        <span>{fmtT(rows[0].points[0].t)}</span>
+        <span>{fmtT(rows[0].points[cols - 1].t)}</span>
+      </div>
     </div>
   );
 }

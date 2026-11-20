@@ -19,9 +19,27 @@ type Draft struct {
 	Summary     string   `json:"summary"`
 	LikelyCause string   `json:"likely_cause"`
 	NextSteps   []string `json:"next_steps"`
+	// Triage is whether the error is worth fixing (only from investigations
+	// that read the code, i.e. Claude Code in the fixer container).
+	Triage *Triage `json:"triage,omitempty"`
 	// Provider is set when the draft came from somewhere other than the
 	// configured provider (e.g. the template fallback).
 	Provider string `json:"-"`
+}
+
+// Triage verdicts.
+const (
+	VerdictFix         = "fix"         // a bug in this code that is worth fixing
+	VerdictIgnore      = "ignore"      // noise: expected, harmless, or not ours to fix
+	VerdictInvestigate = "investigate" // needs a person: infrastructure, config, unclear
+)
+
+// Triage is the investigation's verdict on an error.
+type Triage struct {
+	Verdict    string  `json:"verdict"`
+	Severity   string  `json:"severity"`   // low | medium | high | critical
+	Confidence float64 `json:"confidence"` // 0-1
+	Reason     string  `json:"reason"`
 }
 
 // Input is the (already redacted) information about a group given to a provider.

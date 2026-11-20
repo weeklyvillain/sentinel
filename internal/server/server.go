@@ -43,6 +43,9 @@ type Server struct {
 	Groups     GroupActions
 	Puller     *ai.Puller
 	Static     fs.FS // built SPA (index.html at root); nil = API only
+	// FixerToken authenticates the sentinel-fixer container on /fixer/*.
+	FixerToken string
+	fixer      fixerState
 	Log        *slog.Logger
 	Info       Info
 }
@@ -55,6 +58,9 @@ type Info struct {
 	AIProvider      string `json:"ai_provider"`
 	LogRetention    string `json:"log_retention"`
 	MetricRetention string `json:"metric_retention"`
+	TraceRetention  string `json:"trace_retention"`
+	FixLabel        string `json:"fix_label"`
+	FixMode         string `json:"fix_mode"`
 	DownAfter       string `json:"down_after"`
 	OTLPAddr        string `json:"otlp_addr"`
 }
@@ -107,6 +113,31 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/groups", s.handleListGroups)
 	api("GET /api/groups/{id}", s.handleGetGroup)
 	api("POST /api/groups/{id}/status", s.handleGroupStatus)
+	api("POST /api/groups/{id}/snooze", s.handleSnooze)
+	api("POST /api/groups/{id}/unmerge", s.handleUnmerge)
+	api("POST /api/groups/{id}/fix", s.handleRequestFix)
+	api("GET /api/autofix", s.handleAutofix)
+	mux.HandleFunc("POST /fixer/claim", s.handleFixerClaim)
+	mux.HandleFunc("POST /fixer/jobs/{id}/result", s.handleFixerResult)
+	api("POST /api/groups/merge", s.handleMerge)
+	api("GET /api/groups/{id}/tags", s.handleGroupTags)
+	api("GET /api/groups/{id}/breadcrumbs", s.handleBreadcrumbs)
+	api("GET /api/environments", s.handleEnvironments)
+	api("GET /api/releases", s.handleReleases)
+
+	api("GET /api/traces", s.handleTraces)
+	api("GET /api/traces/{id}", s.handleTrace)
+	api("GET /api/operations", s.handleOperations)
+	api("GET /api/annotations", s.handleAnnotations)
+
+	api("GET /api/silences", s.handleListSilences)
+	api("POST /api/silences", s.handleSaveSilence)
+	api("PUT /api/silences/{id}", s.handleSaveSilence)
+	api("DELETE /api/silences/{id}", s.handleDeleteSilence)
+	api("GET /api/slos", s.handleListSLOs)
+	api("POST /api/slos", s.handleSaveSLO)
+	api("PUT /api/slos/{id}", s.handleSaveSLO)
+	api("DELETE /api/slos/{id}", s.handleDeleteSLO)
 
 	api("GET /api/logs", s.handleLogs)
 	api("GET /api/logs/histogram", s.handleLogHistogram)

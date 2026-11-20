@@ -108,6 +108,9 @@ type PanelQuery struct {
 	Q           string `json:"q"`
 	MinSeverity int32  `json:"min_severity"`
 	SplitBy     string `json:"split_by"` // "" | level | service
+	// Spans: request statistics of entry spans.
+	Operation string `json:"operation"`
+	Stat      string `json:"stat"` // rate | count | errors | error_rate | avg | p50 | p90 | p95 | p99 | heatmap
 }
 
 // PanelRequest asks for a panel's data. The range comes from the URL
@@ -152,6 +155,12 @@ func (s *Server) handlePanelQuery(w http.ResponseWriter, r *http.Request) {
 		switch q.Source {
 		case "logs":
 			series, err = s.logSeries(r, q, from, to, bucket)
+		case "spans":
+			if q.Stat == "heatmap" {
+				series, err = s.Store.SpanHeatmap(r.Context(), q.Service, q.Operation, from, to, bucket)
+			} else {
+				series, err = s.Store.RunSpanQuery(r.Context(), store.SpanQuery{Service: q.Service, Name: q.Operation, Stat: q.Stat, GroupBy: q.GroupBy, Limit: q.Limit}, from, to, bucket)
+			}
 		case "metrics", "":
 			series, err = s.Store.RunMetricQuery(r.Context(), q.MetricQuery, from, to, bucket)
 		default:

@@ -67,6 +67,9 @@ export interface Me {
     ai_provider: string;
     log_retention: string;
     metric_retention: string;
+    trace_retention?: string;
+    fix_label?: string;
+    fix_mode?: "actions" | "fixer";
     down_after: string;
     otlp_addr: string;
   };
@@ -79,7 +82,7 @@ export interface Group {
   fingerprint: string;
   service: string;
   env?: string;
-  kind: "log" | "span" | "down";
+  kind: "log" | "span" | "down" | "perf";
   title: string;
   first_seen: string;
   last_seen: string;
@@ -91,12 +94,162 @@ export interface Group {
   repo?: string;
   block_reason?: string;
   last_reported_at?: string;
+  first_release?: string;
+  last_release?: string;
+  regressed_release?: string;
+  users: number;
+  snooze_until?: string;
+  snooze_count?: number;
+  snooze_release?: string;
+  merged?: number;
+  fix_state?: "queued" | "running" | "no_fix" | "failed" | "requested" | "pr_open" | "merged" | "pr_closed" | "no_pr";
+  fix_started_at?: string;
+  fix_summary?: string;
+  triage_verdict?: "fix" | "ignore" | "investigate";
+  triage_severity?: string;
+  triage_reason?: string;
+  fix_requested_at?: string;
+  fix_attempts?: number;
+  fix_pr_number?: number;
+  fix_pr_url?: string;
+}
+
+export interface TagValue {
+  value: string;
+  count: number;
+  first_seen: string;
+  last_seen: string;
+}
+
+export interface TagSummary {
+  key: string;
+  distinct: number;
+  total: number;
+  top: TagValue[];
+}
+
+export interface Alias {
+  fingerprint: string;
+  group_id: number;
+  count: number;
+  title: string;
+  first_seen: string;
+  status: string;
+  repo?: string;
+  issue_number?: number;
+  issue_url?: string;
+  merged_at: string;
+}
+
+export interface Release {
+  service: string;
+  version: string;
+  env?: string;
+  first_seen: string;
+  last_seen: string;
+  new_issues: number;
+  regressions: number;
+  events: number;
+}
+
+export interface SpanEvent {
+  time: string;
+  name: string;
+  attrs?: Record<string, string>;
+}
+
+export interface Span {
+  trace_id: string;
+  span_id: string;
+  parent_id?: string;
+  service: string;
+  env?: string;
+  version?: string;
+  name: string;
+  kind: string;
+  start: string;
+  duration_us: number;
+  status: number;
+  status_message?: string;
+  attrs?: Record<string, string>;
+  events?: SpanEvent[];
+}
+
+export interface TraceSummary {
+  trace_id: string;
+  root_service: string;
+  root_name: string;
+  start: string;
+  duration_us: number;
+  spans: number;
+  errors: number;
+  services: string[];
+}
+
+export interface OpStats {
+  service: string;
+  name: string;
+  count: number;
+  errors: number;
+  rate_per_s: number;
+  error_rate: number;
+  avg_ms: number;
+  p50_ms: number;
+  p95_ms: number;
+  p99_ms: number;
+}
+
+export interface Annotation {
+  t: string;
+  end?: string;
+  kind: "deploy" | "outage" | "alarm" | "slo";
+  service?: string;
+  text: string;
+}
+
+export interface Silence {
+  id: number;
+  service: string;
+  alarm_id: number;
+  starts_at: string;
+  ends_at: string;
+  comment: string;
+  created_by?: string;
+  created_at: string;
+}
+
+export type SLOKind = "latency" | "availability" | "uptime";
+
+export interface SLO {
+  id: number;
+  name: string;
+  kind: SLOKind;
+  service: string;
+  operation: string;
+  check_id: number;
+  threshold_ms: number;
+  objective: number;
+  window_days: number;
+  webhook_ids: number[];
+  state: "ok" | "slow_burn" | "fast_burn";
+  last_eval?: string;
+  last_changed?: string;
+}
+
+export interface SLOStatus extends SLO {
+  no_data: boolean;
+  total: number;
+  good: number;
+  sli: number;
+  budget_remaining: number;
+  burn: Record<string, number>;
 }
 
 export interface SampleEvent {
   kind: string;
   service: string;
   environment?: string;
+  release?: string;
   time: string;
   severity?: string;
   message?: string;
@@ -123,6 +276,8 @@ export interface Service {
   issues: boolean;
   /** Flag the service as down when it goes quiet (added under Alerts → Uptime). */
   watch: boolean;
+  /** Ask the repository's fix workflow to fix every new issue. */
+  autofix: boolean;
   active_groups?: number;
 }
 
@@ -203,8 +358,10 @@ export interface Alarm {
   op: string;
   threshold: number;
   window_s: number;
+  for_s: number;
+  pending_since?: string;
   webhook_ids: number[];
-  state: "ok" | "firing";
+  state: "ok" | "firing" | "pending";
   last_value: number;
   last_eval?: string;
   last_changed?: string;
@@ -259,7 +416,8 @@ export interface Overview {
 }
 
 export interface AISettings {
-  provider: "anthropic" | "openai" | "none";
+  provider: "anthropic" | "openai" | "claude-code" | "none";
+  skip_noise?: boolean;
   model: string;
   base_url: string;
   timeout_s: number;

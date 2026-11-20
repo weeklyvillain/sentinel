@@ -1,6 +1,6 @@
 import type { Series } from "../api";
 
-export type PanelType = "timeseries" | "stat" | "gauge" | "bar" | "text";
+export type PanelType = "timeseries" | "stat" | "gauge" | "bar" | "table" | "heatmap" | "text" | "row";
 export type Unit = "" | "percent" | "bytes" | "bytes/s" | "seconds" | "ms" | "per_s" | "count";
 export type Reduce = "last" | "avg" | "max" | "min" | "sum";
 
@@ -12,13 +12,13 @@ export interface AttrFilter {
 
 export interface PanelQuery {
   id: string; // A, B, ...
-  source: "metrics" | "logs";
+  source: "metrics" | "logs" | "spans";
   alias?: string;
   hidden?: boolean;
   // metrics
   metric?: string;
   service?: string; // may be "$service"
-  agg?: "avg" | "min" | "max" | "sum" | "last" | "count" | "rate";
+  agg?: "avg" | "min" | "max" | "sum" | "last" | "count" | "rate" | "p50" | "p75" | "p90" | "p95" | "p99" | "heatmap";
   combine?: "" | "sum" | "avg" | "min" | "max";
   group_by?: string[];
   filters?: AttrFilter[];
@@ -27,6 +27,9 @@ export interface PanelQuery {
   q?: string;
   min_severity?: number;
   split_by?: "" | "level" | "service";
+  // spans (request statistics from traces)
+  operation?: string;
+  stat?: "rate" | "count" | "errors" | "error_rate" | "avg" | "p50" | "p90" | "p95" | "p99" | "heatmap";
 }
 
 export interface PanelOptions {
@@ -42,6 +45,8 @@ export interface PanelOptions {
   stack?: boolean;
   reduce?: Reduce;
   text?: string;
+  /** Rows: start collapsed. */
+  collapsed?: boolean;
 }
 
 export interface Panel {
@@ -55,12 +60,34 @@ export interface Panel {
   options: PanelOptions;
 }
 
+/**
+ * A dashboard variable: a picker above the panels whose value replaces
+ * "$name" in queries (service, operation, filter values, log search).
+ */
+export interface Variable {
+  name: string;
+  label?: string;
+  kind: "service" | "attr" | "custom";
+  /** attr: the values of this attribute of this metric. */
+  metric?: string;
+  key?: string;
+  /** custom: a fixed list. */
+  values?: string[];
+  multi?: boolean;
+  default?: string[];
+}
+
+export type VarValues = Record<string, string[]>;
+
 export interface DashSpec {
   panels: Panel[];
   range?: string;
   refresh?: number; // seconds, 0 = off
   /** Default for "$service" in queries; set when the dashboard uses it. */
   service_var?: string;
+  variables?: Variable[];
+  /** Mark deploys, outages and alarms on graphs (default on). */
+  annotations?: boolean;
 }
 
 export interface PanelData {
@@ -74,9 +101,45 @@ export function usesServiceVar(spec: DashSpec): boolean {
   return spec.panels.some((p) => p.queries.some((q) => q.service === "$service"));
 }
 
-/** A copy of the queries with $service replaced. */
-export function resolveQueries(qs: PanelQuery[], service: string): PanelQuery[] {
-  return qs.map((q) => (q.service === "$service" ? { ...q, service } : q));
+/**
+ * The dashboard's variables. Older dashboards only had "$service" with
+ * service_var as its value; that becomes a service variable.
+ */
+export function dashVariables(spec: DashSpec): Variable[] {
+  const vars = [...(spec.variables ?? [])];
+  if (usesServiceVar(spec) && !vars.some((v) => v.name === "service")) {
+    vars.unshift({ name: "service", kind: "service", default: spec.service_var ? [spec.service_var] : [] });
+  }
+  return vars;
+}
+
+const VAR = /^\$([A-Za-z_][\w]*)$/;
+
+function sub(v: string | undefined, vars: VarValues, join: string): string | undefined {
+  if (!v) return v;
+  const m = VAR.exec(v);
+  if (m && vars[m[1]] !== undefined) return vars[m[1]].join(join);
+  return v.replace(/\$([A-Za-z_]\w*)/g, (all, n) => (vars[n] !== undefined ? vars[n].join(" ") : all));
+}
+
+/** A copy of the queries with "$name" variables replaced by their values. */
+export function resolveQueries(qs: PanelQuery[], vars: VarValues): PanelQuery[] {
+  return qs.map((q) => {
+    const out: PanelQuery = { ...q };
+    // A service is a single value: the first one picked.
+    if (q.service) out.service = sub(q.service, Object.fromEntries(Object.entries(vars).map(([k, v]) => [k, v.slice(0, 1)])), "");
+    if (q.operation) out.operation = sub(q.operation, Object.fromEntries(Object.entries(vars).map(([k, v]) => [k, v.slice(0, 1)])), "");
+    if (q.q) out.q = sub(q.q, vars, " ");
+    if (q.filters) {
+      // Several values match any of them; no value drops the filter (all).
+      out.filters = q.filters.flatMap((f) => {
+        const m = VAR.exec(f.value);
+        if (m && vars[m[1]] !== undefined) return vars[m[1]].length ? [{ ...f, value: vars[m[1]].join("|") }] : [];
+        return [{ ...f, value: sub(f.value, vars, "|") ?? "" }];
+      });
+    }
+    return out;
+  });
 }
 
 export function reduceSeries(s: Series, how: Reduce = "last"): number | null {

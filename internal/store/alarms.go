@@ -164,43 +164,49 @@ const (
 const (
 	AlarmOK     = "ok"
 	AlarmFiring = "firing"
+	// AlarmPending: the condition holds, but not yet for the alarm's For.
+	AlarmPending = "pending"
 )
 
 // Alarm is a user-defined alert rule.
 type Alarm struct {
-	ID          int64     `json:"id"`
-	Name        string    `json:"name"`
-	Enabled     bool      `json:"enabled"`
-	Kind        string    `json:"kind"`
-	Service     string    `json:"service"`
-	Query       string    `json:"query"`
-	MinSeverity int32     `json:"min_severity"`
-	Metric      string    `json:"metric"`
-	Agg         string    `json:"agg"`
-	Op          string    `json:"op"` // > >= < <=
-	Threshold   float64   `json:"threshold"`
-	WindowS     int64     `json:"window_s"`
-	WebhookIDs  []int64   `json:"webhook_ids"`
-	State       string    `json:"state"`
-	LastValue   float64   `json:"last_value"`
-	LastEval    time.Time `json:"last_eval,omitzero"`
-	LastChanged time.Time `json:"last_changed,omitzero"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID          int64   `json:"id"`
+	Name        string  `json:"name"`
+	Enabled     bool    `json:"enabled"`
+	Kind        string  `json:"kind"`
+	Service     string  `json:"service"`
+	Query       string  `json:"query"`
+	MinSeverity int32   `json:"min_severity"`
+	Metric      string  `json:"metric"`
+	Agg         string  `json:"agg"`
+	Op          string  `json:"op"` // > >= < <=
+	Threshold   float64 `json:"threshold"`
+	WindowS     int64   `json:"window_s"`
+	// ForS: the condition must hold this long before the alarm fires.
+	ForS         int64     `json:"for_s"`
+	PendingSince time.Time `json:"pending_since,omitzero"`
+	WebhookIDs   []int64   `json:"webhook_ids"`
+	State        string    `json:"state"`
+	LastValue    float64   `json:"last_value"`
+	LastEval     time.Time `json:"last_eval,omitzero"`
+	LastChanged  time.Time `json:"last_changed,omitzero"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 const alarmCols = `SELECT id, name, enabled, kind, service, query, min_severity, metric, agg, op, threshold, window_s, webhook_ids,
-	state, last_value, last_eval, last_changed, created_at FROM alarms`
+	state, last_value, last_eval, last_changed, created_at, for_s, pending_since FROM alarms`
 
 func scanAlarm(r scanner) (Alarm, error) {
 	var a Alarm
 	var enabled int
 	var hooks string
-	var le, lc, ca int64
+	var le, lc, ca, ps int64
 	err := r.Scan(&a.ID, &a.Name, &enabled, &a.Kind, &a.Service, &a.Query, &a.MinSeverity, &a.Metric, &a.Agg, &a.Op, &a.Threshold,
-		&a.WindowS, &hooks, &a.State, &a.LastValue, &le, &lc, &ca)
+		&a.WindowS, &hooks, &a.State, &a.LastValue, &le, &lc, &ca, &a.ForS, &ps)
 	if err != nil {
 		return a, err
 	}
+	a.PendingSince = fromMs(ps)
 	a.Enabled = enabled == 1
 	json.Unmarshal([]byte(hooks), &a.WebhookIDs)
 	if a.WebhookIDs == nil {
@@ -241,17 +247,17 @@ func (s *Store) GetAlarm(ctx context.Context, id int64) (Alarm, error) {
 func (s *Store) SaveAlarm(ctx context.Context, a Alarm) (int64, error) {
 	hooks, _ := json.Marshal(a.WebhookIDs)
 	if a.ID == 0 {
-		res, err := s.db.ExecContext(ctx, `INSERT INTO alarms (name, enabled, kind, service, query, min_severity, metric, agg, op, threshold, window_s, webhook_ids, state, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok', ?)`,
-			a.Name, boolInt(a.Enabled), a.Kind, a.Service, a.Query, a.MinSeverity, a.Metric, a.Agg, a.Op, a.Threshold, a.WindowS, string(hooks), ms(time.Now()))
+		res, err := s.db.ExecContext(ctx, `INSERT INTO alarms (name, enabled, kind, service, query, min_severity, metric, agg, op, threshold, window_s, webhook_ids, state, created_at, for_s)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok', ?, ?)`,
+			a.Name, boolInt(a.Enabled), a.Kind, a.Service, a.Query, a.MinSeverity, a.Metric, a.Agg, a.Op, a.Threshold, a.WindowS, string(hooks), ms(time.Now()), a.ForS)
 		if err != nil {
 			return 0, err
 		}
 		return res.LastInsertId()
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE alarms SET name = ?, enabled = ?, kind = ?, service = ?, query = ?, min_severity = ?, metric = ?, agg = ?,
-		op = ?, threshold = ?, window_s = ?, webhook_ids = ? WHERE id = ?`,
-		a.Name, boolInt(a.Enabled), a.Kind, a.Service, a.Query, a.MinSeverity, a.Metric, a.Agg, a.Op, a.Threshold, a.WindowS, string(hooks), a.ID)
+		op = ?, threshold = ?, window_s = ?, webhook_ids = ?, for_s = ? WHERE id = ?`,
+		a.Name, boolInt(a.Enabled), a.Kind, a.Service, a.Query, a.MinSeverity, a.Metric, a.Agg, a.Op, a.Threshold, a.WindowS, string(hooks), a.ForS, a.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -280,6 +286,33 @@ func (s *Store) RecordAlarmEval(ctx context.Context, id int64, state string, val
 	}
 	_, err := s.db.ExecContext(ctx, `UPDATE alarms SET last_value = ?, last_eval = ? WHERE id = ?`, value, ms(now), id)
 	return err
+}
+
+// SetAlarmPending records since when an alarm's condition holds (zero = it
+// does not).
+func (s *Store) SetAlarmPending(ctx context.Context, id int64, since time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE alarms SET pending_since = ? WHERE id = ?`, ms(since), id)
+	return err
+}
+
+// AlarmEventsBetween returns transitions in [from, to), oldest first (for annotations).
+func (s *Store) AlarmEventsBetween(ctx context.Context, from, to time.Time) ([]AlarmEvent, error) {
+	rows, err := s.rdb.QueryContext(ctx, `SELECT id, alarm_id, ts, state, value, message FROM alarm_events WHERE ts >= ? AND ts < ? ORDER BY ts LIMIT 500`, ms(from), ms(to))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AlarmEvent{}
+	for rows.Next() {
+		var e AlarmEvent
+		var ts int64
+		if err := rows.Scan(&e.ID, &e.AlarmID, &ts, &e.State, &e.Value, &e.Message); err != nil {
+			return nil, err
+		}
+		e.Time = fromMs(ts)
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 // AlarmEvent is one state transition.

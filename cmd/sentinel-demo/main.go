@@ -23,8 +23,13 @@ type kv = map[string]any
 
 func str(k, v string) kv { return kv{"key": k, "value": kv{"stringValue": v}} }
 
+// version is what each service reports as service.version; checkout
+// deploys a new release halfway through the run.
+var version = map[string]string{"checkout": "1.4.2", "billing": "2.0.1", "frontend": "0.9.0", "inventory": "3.1.0"}
+
 func resource(svc, env string) kv {
-	return kv{"attributes": []kv{str("service.name", svc), str("deployment.environment.name", env), str("service.version", "1.4.2")}}
+	return kv{"attributes": []kv{str("service.name", svc), str("deployment.environment.name", env), str("service.version", version[svc]),
+		str("host.name", svc+"-"+strconv.Itoa(1+rand.IntN(2)))}}
 }
 
 func hexID(n int) string {
@@ -125,17 +130,92 @@ func sendErrorSpan(svc, env string, now time.Time) {
 	post("/v1/traces", kv{"resourceSpans": []kv{{"resource": resource(svc, env), "scopeSpans": []kv{{"spans": []kv{span}}}}}})
 }
 
+// span builds an OTLP/JSON span.
+func span(trace, id, parent, name string, kind int, start time.Time, d time.Duration, errMsg string, attrs ...kv) kv {
+	s := kv{"traceId": trace, "spanId": id, "name": name, "kind": kind, "startTimeUnixNano": nanos(start), "endTimeUnixNano": nanos(start.Add(d)), "attributes": attrs}
+	if parent != "" {
+		s["parentSpanId"] = parent
+	}
+	if errMsg != "" {
+		s["status"] = kv{"code": 2, "message": errMsg}
+	}
+	return s
+}
+
+func postSpans(svc, env string, spans []kv) {
+	post("/v1/traces", kv{"resourceSpans": []kv{{"resource": resource(svc, env), "scopeSpans": []kv{{"spans": spans}}}}})
+}
+
+// sendTraces sends one request trace per service: checkout calls billing,
+// /api/products loads products one by one (an N+1), and some checkouts are
+// slow after the new release.
+func sendTraces(svc, env string, now time.Time, slow bool) {
+	trace := hexID(16)
+	root := hexID(8)
+	start := now.Add(-3 * time.Second)
+	switch svc {
+	case "checkout":
+		d := time.Duration(60+rand.IntN(120)) * time.Millisecond
+		if slow && rand.IntN(3) > 0 {
+			d = time.Duration(2200+rand.IntN(1500)) * time.Millisecond
+		}
+		call := hexID(8)
+		billing := hexID(8)
+		errMsg := ""
+		if rand.IntN(15) == 0 {
+			errMsg = "payment provider timeout"
+		}
+		postSpans(svc, env, []kv{
+			span(trace, root, "", "POST /api/checkout", 2, start, d, errMsg, str("http.route", "/api/checkout"), str("http.request.method", "POST"), str("user.id", strconv.Itoa(rand.IntN(5000)))),
+			span(trace, hexID(8), root, "SELECT carts", 3, start.Add(2*time.Millisecond), 8*time.Millisecond, "", str("db.system", "postgresql"), str("db.statement", "SELECT * FROM carts WHERE user_id = $1")),
+			span(trace, call, root, "POST billing/invoices", 3, start.Add(12*time.Millisecond), d-20*time.Millisecond, "", str("server.address", "billing")),
+		})
+		postSpans("billing", "prod", []kv{
+			span(trace, billing, call, "POST /invoices", 2, start.Add(14*time.Millisecond), d-26*time.Millisecond, "", str("http.route", "/invoices")),
+			span(trace, hexID(8), billing, "INSERT invoices", 3, start.Add(16*time.Millisecond), 6*time.Millisecond, "", str("db.system", "postgresql"), str("db.statement", "INSERT INTO invoices VALUES ($1, $2)")),
+		})
+	case "frontend":
+		spans := []kv{span(trace, root, "", "GET /api/products", 2, start, 140*time.Millisecond, "", str("http.route", "/api/products"))}
+		for k := 0; k < 12; k++ {
+			spans = append(spans, span(trace, hexID(8), root, "SELECT products", 3, start.Add(time.Duration(5+10*k)*time.Millisecond), 9*time.Millisecond, "",
+				str("db.system", "postgresql"), str("db.statement", fmt.Sprintf("SELECT * FROM products WHERE id = %d", 100+rand.IntN(900)))))
+		}
+		postSpans(svc, env, spans)
+	default:
+		postSpans(svc, env, []kv{span(trace, root, "", "GET /api/"+svc, 2, start, time.Duration(10+rand.IntN(40))*time.Millisecond, "", str("http.route", "/api/"+svc))})
+	}
+}
+
+var durBounds = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5}
+
 type counters struct {
 	requests, durSum float64
 	durCount         int64
+	buckets          []int64
 }
 
 func sendMetrics(svc, env string, c *counters, start, now time.Time, t float64) {
 	load := 0.5 + 0.35*math.Sin(t/60) + rand.Float64()*0.1
 	n := 20 + rand.IntN(30)
 	c.requests += float64(n)
+	if c.buckets == nil {
+		c.buckets = make([]int64, len(durBounds)+1)
+	}
 	for k := 0; k < n; k++ {
-		c.durSum += 0.02 + rand.ExpFloat64()*0.05*(1+load)
+		d := 0.02 + rand.ExpFloat64()*0.05*(1+load)
+		c.durSum += d
+		b := len(durBounds)
+		for i, ub := range durBounds {
+			if d <= ub {
+				b = i
+				break
+			}
+		}
+		c.buckets[b]++
+	}
+	var bucketCounts []string
+	for _, n := range c.buckets {
+		bucketCounts = append(bucketCounts, strconv.FormatInt(n, 10))
 	}
 	c.durCount += int64(n)
 	ts := nanos(now)
@@ -145,7 +225,8 @@ func sendMetrics(svc, env string, c *counters, start, now time.Time, t float64) 
 		{"name": "http.server.requests", "unit": "{request}", "sum": kv{"isMonotonic": true, "aggregationTemporality": 2, "dataPoints": []kv{
 			{"asDouble": c.requests, "startTimeUnixNano": nanos(start), "timeUnixNano": ts, "attributes": []kv{str("http.response.status_code", "200")}}}}},
 		{"name": "http.server.request.duration", "unit": "s", "histogram": kv{"aggregationTemporality": 2, "dataPoints": []kv{
-			{"count": strconv.FormatInt(c.durCount, 10), "sum": c.durSum, "startTimeUnixNano": nanos(start), "timeUnixNano": ts}}}},
+			{"count": strconv.FormatInt(c.durCount, 10), "sum": c.durSum, "startTimeUnixNano": nanos(start), "timeUnixNano": ts,
+				"bucketCounts": bucketCounts, "explicitBounds": durBounds}}}},
 		{"name": "queue.depth", "unit": "{job}", "gauge": kv{"dataPoints": []kv{{"asInt": strconv.Itoa(int(40 + 30*math.Sin(t/45) + float64(rand.IntN(10)))), "timeUnixNano": ts}}}},
 	}
 	post("/v1/metrics", kv{"resourceMetrics": []kv{{"resource": resource(svc, env), "scopeMetrics": []kv{{"metrics": metrics}}}}})
@@ -182,9 +263,15 @@ func main() {
 			if s.name == "inventory" && *stopAfter > 0 && time.Since(start) > *stopAfter {
 				continue
 			}
+			// Halfway through, checkout ships 1.5.0, which is slower.
+			released := *duration > 0 && time.Since(start) > *duration/2
+			if released {
+				version["checkout"] = "1.5.0"
+			}
 			burst := s.name == "checkout" && i%60 < 8
 			sendLogs(s.name, s.env, i, burst, now)
 			sendMetrics(s.name, s.env, ctr[s.name], start, now, time.Since(start).Seconds())
+			sendTraces(s.name, s.env, now, released)
 			if s.name == "inventory" && rand.IntN(5) == 0 {
 				sendErrorSpan(s.name, s.env, now)
 			}

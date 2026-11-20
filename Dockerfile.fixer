@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1
+# sentinel-fixer: runs Claude Code next to Sentinel to fix issues and open
+# pull requests. See "Automated fixes" in the README.
+
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/sentinel-fixer ./cmd/sentinel-fixer
+
+FROM node:22-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+ARG CLAUDE_CODE_VERSION=latest
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && npm cache clean --force
+# Claude Code runs as "agent", the fixer (which holds FIXER_TOKEN and the
+# per-job GitHub token) as root, so the agent cannot read them from /proc.
+RUN useradd --create-home --uid 10001 agent && mkdir -p /work && chmod 711 /work
+# Add the toolchains your tests need here, e.g.:
+#   COPY --from=golang:1.26 /usr/local/go /usr/local/go
+#   ENV PATH=/usr/local/go/bin:$PATH
+# and allow them with FIXER_EXTRA_TOOLS="Bash(go test:*)".
+COPY --from=build /out/sentinel-fixer /usr/local/bin/sentinel-fixer
+ENV FIXER_WORKDIR=/work FIXER_AGENT_UID=10001 FIXER_AGENT_HOME=/home/agent
+ENTRYPOINT ["/usr/local/bin/sentinel-fixer"]

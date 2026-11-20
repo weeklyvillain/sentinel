@@ -207,25 +207,17 @@ func (s *Server) handleServiceFlags(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListGroups(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	var statuses []string
+	f := store.GroupFilter{Service: q.Get("service"), Kind: q.Get("kind"), Text: q.Get("q"), Env: q.Get("env"),
+		Release: q.Get("release"), FirstRelease: q.Get("first_release"), Sort: q.Get("sort")}
 	if st := q.Get("status"); st != "" {
-		statuses = strings.Split(st, ",")
+		f.Statuses = strings.Split(st, ",")
 	}
-	groups, err := s.Store.ListGroups(r.Context(), statuses...)
+	groups, err := s.Store.QueryGroups(r.Context(), f)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	out := []store.Group{}
-	svc, kind, text := q.Get("service"), q.Get("kind"), strings.ToLower(q.Get("q"))
-	for _, g := range groups {
-		if (svc != "" && g.Service != svc) || (kind != "" && string(g.Kind) != kind) ||
-			(text != "" && !strings.Contains(strings.ToLower(g.Title+" "+g.Service+" "+g.Fingerprint), text)) {
-			continue
-		}
-		out = append(out, g)
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, groups)
 }
 
 func (s *Server) handleGetGroup(w http.ResponseWriter, r *http.Request) {
@@ -252,12 +244,22 @@ func (s *Server) handleGetGroup(w http.ResponseWriter, r *http.Request) {
 	if to.Sub(from) < time.Hour {
 		from = to.Add(-time.Hour)
 	}
-	hist, err := s.Store.LogHistogram(r.Context(), store.LogQuery{Fingerprint: g.Fingerprint, From: from, To: to}, autoBucket(from, to), "level")
+	fps, err := s.Store.Fingerprints(r.Context(), g.Fingerprint)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"group": g, "samples": samples, "histogram": hist})
+	hist, err := s.Store.LogHistogram(r.Context(), store.LogQuery{Fingerprints: fps, From: from, To: to}, autoBucket(from, to), "level")
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	aliases, err := s.Store.Aliases(r.Context(), g.ID)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"group": g, "samples": samples, "histogram": hist, "aliases": aliases})
 }
 
 // GroupActions changes a group and its GitHub issue together (the reporter).
@@ -342,8 +344,20 @@ func logQuery(r *http.Request) store.LogQuery {
 	return lq
 }
 
+// expandFingerprint makes a group filter also match the fingerprints merged
+// into the group.
+func (s *Server) expandFingerprint(r *http.Request, lq *store.LogQuery) {
+	if lq.Fingerprint == "" {
+		return
+	}
+	if fps, err := s.Store.Fingerprints(r.Context(), lq.Fingerprint); err == nil && len(fps) > 1 {
+		lq.Fingerprints = fps
+	}
+}
+
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	lq := logQuery(r)
+	s.expandFingerprint(r, &lq)
 	if lq.Limit <= 0 {
 		lq.Limit = 100
 	}
@@ -367,6 +381,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLogHistogram(w http.ResponseWriter, r *http.Request) {
 	lq := logQuery(r)
+	s.expandFingerprint(r, &lq)
 	by := r.URL.Query().Get("by")
 	if by != "service" {
 		by = "level"

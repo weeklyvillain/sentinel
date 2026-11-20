@@ -2,7 +2,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, Bucket, LogRecord, qs } from "../api";
 import { bucketKeys, Legend, StackedBars } from "../components/charts";
-import { Empty, ErrorNote, Icon, RangePicker, Switch, useAsync } from "../components/ui";
+import { CopyLink, Empty, ErrorNote, Icon, RangePicker, Switch, useAsync } from "../components/ui";
 import { useServices } from "../shared";
 import { fmtFull, fmtNum, fmtTime, LEVEL_COLORS, levelOf } from "../util";
 
@@ -87,6 +87,7 @@ export default function Logs() {
         <h1>Logs</h1>
         <span className="sub">{logs.data?.total !== undefined ? `${fmtNum(logs.data.total)} matching` : ""}</span>
         <div className="actions">
+          <CopyLink pin />
           <label className="check">
             <Switch checked={live} onChange={setLive} label="Live tail" /> Live
           </label>

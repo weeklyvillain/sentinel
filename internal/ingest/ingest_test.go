@@ -271,3 +271,38 @@ func TestIngestToken(t *testing.T) {
 		t.Errorf("events: %d", len(s.events))
 	}
 }
+
+type spanSink struct {
+	sink
+	spans []store.Span
+}
+
+func (s *spanSink) Spans(_ context.Context, sp []store.Span) { s.spans = append(s.spans, sp...) }
+
+func TestTracesStoreEverySpanAndSample(t *testing.T) {
+	s := &spanSink{}
+	r := &Receiver{Sink: s, SpanSampleRate: 0}
+	body := `{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"api"}},{"key":"service.version","value":{"stringValue":"1.2"}}]},
+	"scopeSpans":[{"spans":[
+	 {"traceId":"0102030405060708090a0b0c0d0e0f10","spanId":"0102030405060708","name":"GET /","kind":2,"startTimeUnixNano":"1000000000","endTimeUnixNano":"1250000000"},
+	 {"traceId":"0102030405060708090a0b0c0d0e0f11","spanId":"0102030405060709","name":"db","kind":3,"startTimeUnixNano":"1000000000","endTimeUnixNano":"1001000000","status":{"code":2}}]}]}]}`
+	if err := r.traces(context.Background(), []byte(body), true); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.spans) != 2 {
+		t.Fatalf("spans: %d", len(s.spans))
+	}
+	ok, bad := s.spans[0], s.spans[1]
+	if ok.Kind != "server" || ok.DurationUS != 250000 || ok.Version != "1.2" || ok.Sampled {
+		t.Fatalf("server span: %+v", ok)
+	}
+	if !bad.Sampled || bad.Status != store.SpanError {
+		t.Fatalf("error spans are always kept: %+v", bad)
+	}
+	if len(s.events) != 1 || s.events[0].Release != "1.2" {
+		t.Fatalf("error event with release: %+v", s.events)
+	}
+	if !sampled("00000000000000000000000000000000", 0.5) || sampled("ffffffffffffffffffffffffffffffff", 0.5) {
+		t.Fatal("sampling by trace id")
+	}
+}

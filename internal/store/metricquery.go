@@ -29,7 +29,7 @@ type MetricQuery struct {
 	Metric  string       `json:"metric"`
 	Service string       `json:"service"`
 	Filters []AttrFilter `json:"filters"`
-	Agg     string       `json:"agg"`      // avg | min | max | sum | last | count | rate
+	Agg     string       `json:"agg"`      // avg | min | max | sum | last | count | rate; histograms also p50 | p75 | p90 | p95 | p99 | heatmap
 	Combine string       `json:"combine"`  // sum | avg | min | max; default sum for sum/count/rate, else avg
 	GroupBy []string     `json:"group_by"` // attribute keys and/or "service"
 	Limit   int          `json:"limit"`    // most significant groups kept (default 10)
@@ -45,7 +45,7 @@ func (q *MetricQuery) Validate() error {
 	if q.Agg == "" {
 		q.Agg = "avg"
 	}
-	if !validAggs[q.Agg] {
+	if !validAggs[q.Agg] && !IsHistAgg(q.Agg) {
 		return fmt.Errorf("unknown aggregation %q", q.Agg)
 	}
 	if q.Combine == "" {
@@ -146,6 +146,9 @@ func (s *Store) RunMetricQuery(ctx context.Context, q MetricQuery, from, to time
 	}
 	if bucket < time.Second {
 		bucket = time.Minute
+	}
+	if IsHistAgg(q.Agg) {
+		return s.runHistQuery(ctx, q, from, to, bucket)
 	}
 	b := bucket.Milliseconds()
 	start := (ms(from) / b) * b
