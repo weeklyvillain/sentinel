@@ -2,7 +2,10 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -90,5 +93,75 @@ func TestFixerEndpoints(t *testing.T) {
 	// routes are not reachable with a dashboard session.
 	if resp, _ := h.do(http.MethodPost, "/fixer/claim", "{}", true); resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("dashboard session on fixer route: %d", resp.StatusCode)
+	}
+}
+
+// The Claude sign-in, fix mode and models come from the dashboard; a fixer
+// without its own sign-in gets no work until one is set.
+func TestFixerDashboardSettings(t *testing.T) {
+	h := newHarness(t, AuthConfig{Mode: "none"}, "")
+	ops := &fakeFixOps{jobs: []*fixjob.Job{{ID: 4, Attempt: 1, Repo: "acme/app", Token: "repo-token"}}}
+	h.s.Groups, h.s.FixerToken = ops, "0123456789abcdef0123"
+	var mode string
+	h.s.SetFixMode = func(m string) { mode = m }
+	claim := func() (int, fixjob.Job) {
+		req, _ := http.NewRequest(http.MethodPost, h.srv.URL+"/fixer/claim", strings.NewReader(`{"version":"1","auth":""}`))
+		req.Header.Set("Authorization", "Bearer "+h.s.FixerToken)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var j fixjob.Job
+		json.NewDecoder(resp.Body).Decode(&j)
+		return resp.StatusCode, j
+	}
+	if code, _ := claim(); code != http.StatusNoContent || !h.s.fixer.snapshot().NeedsSignIn || len(ops.jobs) != 1 {
+		t.Fatalf("no sign-in anywhere: %d %+v", code, h.s.fixer.snapshot())
+	}
+	resp, body := h.do(http.MethodPut, "/api/autofix", `{"mode":"fixer","claude_token":"sk-ant-oat01-abc","model":"claude-sonnet-5-5"}`, true)
+	if resp.StatusCode != http.StatusOK || strings.Contains(body, "sk-ant-oat01-abc") || !strings.Contains(body, `"has_claude":true`) || mode != "fixer" {
+		t.Fatalf("save: %d %s (mode %q)", resp.StatusCode, body, mode)
+	}
+	code, job := claim()
+	if code != http.StatusOK || job.Claude == nil || job.Claude.Kind != fixjob.AuthSubscription || job.Claude.Token != "sk-ant-oat01-abc" || job.Model != "claude-sonnet-5-5" {
+		t.Fatalf("claim: %d %+v", code, job)
+	}
+	if st := h.s.fixer.snapshot(); st.NeedsSignIn || st.Auth != "subscription" || st.AuthFrom != "dashboard" {
+		t.Fatalf("status: %+v", st)
+	}
+	// Settings survive a restart.
+	h.s.fixer.settings = FixerSettings{}
+	mode = ""
+	h.s.InitFixer(context.Background())
+	if h.s.fixerSettings().ClaudeToken != "sk-ant-oat01-abc" || mode != "fixer" {
+		t.Fatalf("reload: %+v %q", h.s.fixerSettings(), mode)
+	}
+	if resp, _ := h.do(http.MethodPut, "/api/autofix", `{"clear_claude":true,"mode":"bogus"}`, true); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad mode: %d", resp.StatusCode)
+	}
+	if resp, _ := h.do(http.MethodPut, "/api/autofix", `{"clear_claude":true}`, true); resp.StatusCode != http.StatusOK || h.s.fixerSettings().ClaudeToken != "" {
+		t.Fatalf("clear: %d", resp.StatusCode)
+	}
+}
+
+func TestEnsureFixerToken(t *testing.T) {
+	h := newHarness(t, AuthConfig{Mode: "none"}, "")
+	file := filepath.Join(t.TempDir(), "token")
+	a, err := EnsureFixerToken(context.Background(), h.s.Store, "", file)
+	if err != nil || len(a) != 64 {
+		t.Fatalf("generate: %q %v", a, err)
+	}
+	if b, _ := os.ReadFile(file); strings.TrimSpace(string(b)) != a {
+		t.Fatalf("file: %q", b)
+	}
+	if b, _ := EnsureFixerToken(context.Background(), h.s.Store, "", file); b != a {
+		t.Fatal("the generated token changed on restart")
+	}
+	if c, _ := EnsureFixerToken(context.Background(), h.s.Store, "from-env-0123456789", file); c != "from-env-0123456789" {
+		t.Fatal("FIXER_TOKEN is not used")
+	}
+	if b, _ := os.ReadFile(file); strings.TrimSpace(string(b)) != "from-env-0123456789" {
+		t.Fatalf("file not updated: %q", b)
 	}
 }

@@ -45,6 +45,9 @@ type Server struct {
 	Static     fs.FS // built SPA (index.html at root); nil = API only
 	// FixerToken authenticates the sentinel-fixer container on /fixer/*.
 	FixerToken string
+	// SetFixMode applies the fix mode chosen in the dashboard (the
+	// reporter's); see InitFixer.
+	SetFixMode func(mode string)
 	fixer      fixerState
 	Log        *slog.Logger
 	Info       Info
@@ -60,7 +63,7 @@ type Info struct {
 	MetricRetention string `json:"metric_retention"`
 	TraceRetention  string `json:"trace_retention"`
 	FixLabel        string `json:"fix_label"`
-	FixMode         string `json:"fix_mode"`
+	FixMode         string `json:"fix_mode"` // AUTOFIX_MODE; info() has the one in use
 	DownAfter       string `json:"down_after"`
 	OTLPAddr        string `json:"otlp_addr"`
 }
@@ -71,6 +74,7 @@ func (s *Server) info() Info {
 	if s.AI != nil {
 		in.AIProvider = s.AI.Name()
 	}
+	in.FixMode = s.fixMode()
 	return in
 }
 
@@ -117,6 +121,7 @@ func (s *Server) Handler() http.Handler {
 	api("POST /api/groups/{id}/unmerge", s.handleUnmerge)
 	api("POST /api/groups/{id}/fix", s.handleRequestFix)
 	api("GET /api/autofix", s.handleAutofix)
+	api("PUT /api/autofix", s.handlePutAutofix)
 	mux.HandleFunc("POST /fixer/claim", s.handleFixerClaim)
 	mux.HandleFunc("POST /fixer/jobs/{id}/result", s.handleFixerResult)
 	api("POST /api/groups/merge", s.handleMerge)

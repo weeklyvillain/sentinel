@@ -30,7 +30,7 @@ func (f *fixer) analyze(ctx context.Context, job *fixjob.Job, log *slog.Logger) 
 	} else if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fixjob.Result{}, err
 	}
-	out, err := f.runClaude(ctx, dir, analyzePrompt(job, withCode), analyzeTools, f.cfg.analyzeTurns, f.cfg.analyzeModel)
+	out, err := f.runClaude(ctx, job, dir, analyzePrompt(job, withCode), analyzeTools, f.cfg.analyzeTurns, f.cfg.analyzeModel)
 	if err != nil {
 		return fixjob.Result{}, err
 	}

@@ -34,7 +34,19 @@ const fixRunTimeout = time.Hour
 // ErrStaleJob is returned for a result of a job that is no longer running.
 var ErrStaleJob = errors.New("this fix job is no longer running")
 
-func (r *Reporter) fixerMode() bool { return r.Cfg.FixMode == FixModeFixer }
+// FixMode is how fixes run now: Cfg.FixMode (AUTOFIX_MODE) until the
+// dashboard sets one.
+func (r *Reporter) FixMode() string {
+	if m := r.fixMode.Load(); m != nil {
+		return *m
+	}
+	return r.Cfg.FixMode
+}
+
+// SetFixMode switches between FixModeActions and FixModeFixer.
+func (r *Reporter) SetFixMode(m string) { r.fixMode.Store(&m) }
+
+func (r *Reporter) fixerMode() bool { return r.FixMode() == FixModeFixer }
 
 // queueFix puts a group in the fixer's queue.
 func (r *Reporter) queueFix(ctx context.Context, gh github.API, g store.Group, why string) error {

@@ -42,9 +42,14 @@ type Config struct {
 	FixLabel string // AUTOFIX_LABEL, the label that starts the repository's fix workflow (default sentinel-autofix)
 	// AUTOFIX_MODE: "actions" (label the issue; a workflow in the repository
 	// fixes it) or "fixer" (the sentinel-fixer container next to Sentinel).
+	// The default; it can be changed in the dashboard.
 	FixMode string
 	// FIXER_TOKEN: the shared secret the fixer container authenticates with.
+	// Without it Sentinel generates one and keeps it in the database.
 	FixerToken string
+	// FIXER_TOKEN_FILE: where Sentinel writes the token for the fixer to
+	// read (a volume both containers mount).
+	FixerTokenFile string
 
 	// GitHub App (recommended).
 	GitHubAppID           int64  // GITHUB_APP_ID
@@ -117,15 +122,13 @@ func Load() (Config, error) {
 	c.FixLabel = env("AUTOFIX_LABEL", "sentinel-autofix")
 	c.FixMode = strings.ToLower(env("AUTOFIX_MODE", "actions"))
 	c.FixerToken = os.Getenv("FIXER_TOKEN")
+	c.FixerTokenFile = os.Getenv("FIXER_TOKEN_FILE")
 	if c.FixerToken != "" && len(c.FixerToken) < 16 {
 		p.errs = append(p.errs, "FIXER_TOKEN must be at least 16 characters (openssl rand -hex 32)")
 	}
+	// Without FIXER_TOKEN, Sentinel generates one (see FixerTokenFile).
 	switch c.FixMode {
-	case "actions":
-	case "fixer":
-		if c.FixerToken == "" {
-			p.errs = append(p.errs, "AUTOFIX_MODE=fixer needs FIXER_TOKEN (openssl rand -hex 32)")
-		}
+	case "actions", "fixer":
 	default:
 		p.errs = append(p.errs, "AUTOFIX_MODE must be actions or fixer")
 	}
@@ -163,9 +166,6 @@ func Load() (Config, error) {
 	case "anthropic", "openai", "none", "template", "claude-code":
 	default:
 		return c, fmt.Errorf("config: AI_PROVIDER must be anthropic, openai, claude-code or none, got %q", c.AIProvider)
-	}
-	if c.AIProvider == "claude-code" && c.FixerToken == "" {
-		return c, fmt.Errorf("config: AI_PROVIDER=claude-code needs the fixer container and FIXER_TOKEN")
 	}
 	if c.AIProvider == "openai" && c.AIModel == "" {
 		return c, fmt.Errorf("config: AI_MODEL is required for AI_PROVIDER=openai")

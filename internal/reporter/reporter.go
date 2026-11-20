@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/weeklyvillain/sentinel/internal/ai"
@@ -70,6 +71,8 @@ type Reporter struct {
 	perfAt    time.Time
 	// mu serializes Tick with uptime-check transitions.
 	mu sync.Mutex
+	// fixMode, once set from the dashboard, replaces Cfg.FixMode.
+	fixMode atomic.Pointer[string]
 }
 
 // New builds a reporter. StartedAt defaults to now.

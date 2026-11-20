@@ -14,9 +14,10 @@ import (
 )
 
 // The sentinel-fixer container talks to /fixer/* with "Authorization:
-// Bearer <FIXER_TOKEN>". These routes are outside the dashboard sign-in and
-// only work when FIXER_TOKEN is set. The fixer investigates errors (AI
-// provider claude-code) and fixes them (AUTOFIX_MODE=fixer).
+// Bearer <FIXER_TOKEN>" (generated and shared through FIXER_TOKEN_FILE when
+// not set). These routes are outside the dashboard sign-in. The fixer
+// investigates errors (AI provider claude-code) and fixes them (fix mode
+// "fixer", chosen in the dashboard or with AUTOFIX_MODE).
 
 // fixerState is what the dashboard shows about the fixer.
 type fixerState struct {
@@ -30,6 +31,10 @@ type fixerState struct {
 	jobIssue int
 	jobSince time.Time
 	lastErr  string
+	// needsSignIn: the fixer asked for work but neither it nor the
+	// dashboard has a Claude sign-in, so it gets none.
+	needsSignIn bool
+	settings    FixerSettings
 }
 
 // FixerStatus is the fixer as the dashboard sees it.
@@ -38,7 +43,10 @@ type FixerStatus struct {
 	LastSeen  time.Time `json:"last_seen,omitzero"`
 	Version   string    `json:"version,omitempty"`
 	Auth      string    `json:"auth,omitempty"` // subscription | api_key
-	Working   *struct {
+	// AuthFrom says where the sign-in comes from: dashboard | fixer.
+	AuthFrom    string `json:"auth_from,omitempty"`
+	NeedsSignIn bool   `json:"needs_sign_in,omitempty"`
+	Working     *struct {
 		ID    int64     `json:"id"`
 		Kind  string    `json:"kind"`
 		Repo  string    `json:"repo"`
@@ -52,7 +60,13 @@ func (f *fixerState) snapshot() FixerStatus {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	st := FixerStatus{LastSeen: f.lastSeen, Version: f.version, Auth: f.auth, LastError: f.lastErr,
-		Connected: !f.lastSeen.IsZero() && time.Since(f.lastSeen) < 2*time.Minute}
+		Connected: !f.lastSeen.IsZero() && time.Since(f.lastSeen) < 2*time.Minute, NeedsSignIn: f.needsSignIn}
+	switch {
+	case f.settings.ClaudeToken != "":
+		st.Auth, st.AuthFrom = f.settings.ClaudeKind, "dashboard"
+	case f.auth != "":
+		st.AuthFrom = "fixer"
+	}
 	if f.jobID != 0 {
 		st.Working = &struct {
 			ID    int64     `json:"id"`
@@ -67,7 +81,7 @@ func (f *fixerState) snapshot() FixerStatus {
 
 func (s *Server) fixerAuthorized(w http.ResponseWriter, r *http.Request) bool {
 	if s.FixerToken == "" {
-		writeErr(w, http.StatusNotFound, "the fixer is not enabled (set FIXER_TOKEN)")
+		writeErr(w, http.StatusNotFound, "the fixer is not enabled")
 		return false
 	}
 	tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -79,7 +93,8 @@ func (s *Server) fixerAuthorized(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // handleFixerClaim gives the fixer its next job (204 when there is none).
-// The request body says which version it is and how it signs in to Claude.
+// The request body says which version it is and how it signs in to Claude;
+// jobs wait while neither the fixer nor the dashboard has a sign-in.
 func (s *Server) handleFixerClaim(w http.ResponseWriter, r *http.Request) {
 	if !s.fixerAuthorized(w, r) {
 		return
@@ -88,7 +103,13 @@ func (s *Server) handleFixerClaim(w http.ResponseWriter, r *http.Request) {
 	json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&hello)
 	s.fixer.mu.Lock()
 	s.fixer.lastSeen, s.fixer.version, s.fixer.auth = time.Now().UTC(), hello.Version, hello.Auth
+	s.fixer.needsSignIn = hello.Auth == "" && s.fixer.settings.ClaudeToken == ""
+	needsSignIn := s.fixer.needsSignIn
 	s.fixer.mu.Unlock()
+	if needsSignIn {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	ops, ok := s.groupOps(w)
 	if !ok {
 		return
@@ -108,6 +129,7 @@ func (s *Server) handleFixerClaim(w http.ResponseWriter, r *http.Request) {
 	s.fixer.mu.Lock()
 	s.fixer.jobID, s.fixer.jobKind, s.fixer.jobRepo, s.fixer.jobIssue, s.fixer.jobSince = job.ID, job.Kind, job.Repo, job.IssueNumber, time.Now().UTC()
 	s.fixer.mu.Unlock()
+	s.fixerJobAuth(job)
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, job)
 }

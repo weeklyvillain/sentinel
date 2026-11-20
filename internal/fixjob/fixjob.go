@@ -1,7 +1,8 @@
 // Package fixjob is the contract between Sentinel and sentinel-fixer, the
 // companion container that runs Claude Code to fix issues and open pull
 // requests. Sentinel queues jobs; the fixer claims one at a time over HTTP
-// (bearer FIXER_TOKEN), works on it and reports the result.
+// (bearer FIXER_TOKEN, which Sentinel generates and shares through a file
+// when it is not set), works on it and reports the result.
 package fixjob
 
 // Job kinds.
@@ -35,6 +36,32 @@ type Job struct {
 	Token string `json:"token"`
 	// DryRun: do everything but push and open the pull request.
 	DryRun bool `json:"dry_run,omitempty"`
+	// Claude is the Claude Code sign-in set in the dashboard. It replaces
+	// the fixer's own (CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY) when set.
+	Claude *ClaudeAuth `json:"claude,omitempty"`
+	// Model is the Claude model set in the dashboard for this kind of job;
+	// empty uses the fixer's FIXER_MODEL / FIXER_ANALYZE_MODEL.
+	Model string `json:"model,omitempty"`
+}
+
+// Claude Code sign-in kinds.
+const (
+	AuthSubscription = "subscription" // an OAuth token from `claude setup-token`
+	AuthAPIKey       = "api_key"      // an Anthropic API key, billed per token
+)
+
+// ClaudeAuth is how Claude Code signs in for a job.
+type ClaudeAuth struct {
+	Kind  string `json:"kind"` // subscription | api_key
+	Token string `json:"token"`
+}
+
+// Env is the environment variable Claude Code reads the credential from.
+func (a ClaudeAuth) Env() string {
+	if a.Kind == AuthAPIKey {
+		return "ANTHROPIC_API_KEY=" + a.Token
+	}
+	return "CLAUDE_CODE_OAUTH_TOKEN=" + a.Token
 }
 
 // Result statuses.
@@ -78,7 +105,9 @@ type Result struct {
 // Hello is what the fixer says about itself when it asks for work.
 type Hello struct {
 	Version string `json:"version"`
-	// Auth is how its Claude Code signs in: "subscription" (an OAuth token
-	// from `claude setup-token`) or "api_key". Never the credential itself.
+	// Auth is how its Claude Code signs in from its own environment:
+	// "subscription" (an OAuth token from `claude setup-token`), "api_key",
+	// or "" when it has none and needs the one set in the dashboard. Never
+	// the credential itself.
 	Auth string `json:"auth"`
 }

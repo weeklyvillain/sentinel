@@ -159,39 +159,121 @@ interface FixerStatus {
   last_seen?: string;
   version?: string;
   auth?: "subscription" | "api_key";
+  auth_from?: "dashboard" | "fixer";
+  needs_sign_in?: boolean;
   working?: { id: number; kind?: string; repo: string; issue: number; since: string };
   last_error?: string;
 }
 
-interface AutofixInfo {
+interface FixerSettings {
   mode: "actions" | "fixer";
-  path?: string;
-  workflow?: string;
-  label?: string;
-  note?: string;
-  fixer?: FixerStatus;
+  env_mode: "actions" | "fixer";
+  claude_kind?: "subscription" | "api_key";
+  has_claude: boolean;
+  model: string;
+  analyze_model: string;
 }
 
-function FixerCard({ f }: { f: FixerStatus }) {
+interface AutofixInfo {
+  mode: "actions" | "fixer";
+  settings: FixerSettings;
+  fixer: FixerStatus;
+  path: string;
+  workflow: string;
+  label: string;
+  note?: string;
+}
+
+function AutofixSetup() {
+  const info = useAsync(() => api.get<AutofixInfo>("/api/autofix"), [], 15000);
+  const run = useAction();
+  if (!info.data) return <ErrorNote error={info.error} />;
+  const d = info.data;
+  const setMode = async (mode: "actions" | "fixer") => {
+    if (mode === d.mode) return;
+    if (await run(() => api.put("/api/autofix", { mode }), mode === "fixer" ? "Fixes now run in Sentinel's fixer" : "Fixes now run in GitHub Actions"))
+      info.reload();
+  };
+  return (
+    <>
+      <div className="card">
+        <div className="card-head">
+          <h2>Automated fixes</h2>
+          <div className="right seg">
+            <button className={d.mode === "fixer" ? "on" : ""} onClick={() => setMode("fixer")}>
+              Sentinel's fixer
+            </button>
+            <button className={d.mode === "actions" ? "on" : ""} onClick={() => setMode("actions")}>
+              GitHub Actions
+            </button>
+          </div>
+        </div>
+        <p className="small muted">
+          When <strong>Auto-fix</strong> is on for a service (Settings → Services), or someone presses <strong>Fix it</strong> on an issue, Claude Code fixes the
+          error and opens a pull request that says <code>Fixes #N</code>; Sentinel links it on the issue and merging it closes the issue.{" "}
+          {d.mode === "fixer" ? (
+            "Fixes run in the fixer container next to Sentinel, with the Claude sign-in below."
+          ) : (
+            <>
+              Sentinel adds the <code>{d.label}</code> label to the issue and a workflow in the repository does the fix.
+            </>
+          )}
+        </p>
+      </div>
+      <FixerCard d={d} onSaved={info.reload} />
+      {d.mode === "actions" && <WorkflowCard d={d} />}
+    </>
+  );
+}
+
+function signInText(d: AutofixInfo) {
+  const f = d.fixer;
+  const what = f.auth === "api_key" ? "an Anthropic API key (billed per token)" : "your Claude subscription";
+  if (f.auth_from === "dashboard") return `${what}, set here`;
+  if (f.auth_from === "fixer") return `${what}, from the fixer's environment`;
+  return d.settings.has_claude ? "set here" : "none yet";
+}
+
+function FixerCard({ d, onSaved }: { d: AutofixInfo; onSaved: () => void }) {
+  const run = useAction();
+  const f = d.fixer;
+  const [kind, setKind] = useState<"subscription" | "api_key">(d.settings.claude_kind ?? "subscription");
+  const [token, setToken] = useState("");
+  const [model, setModel] = useState(d.settings.model);
+  const [analyzeModel, setAnalyzeModel] = useState(d.settings.analyze_model);
+  const dirty = token !== "" || model !== d.settings.model || analyzeModel !== d.settings.analyze_model;
+  const save = async () => {
+    const body = { model, analyze_model: analyzeModel, ...(token ? { claude_kind: kind, claude_token: token } : {}) };
+    if (await run(() => api.put("/api/autofix", body), "Fixer settings saved")) {
+      setToken("");
+      onSaved();
+    }
+  };
+  const remove = async () => {
+    if (await run(() => api.put("/api/autofix", { clear_claude: true }), "Claude sign-in removed")) onSaved();
+  };
   return (
     <div className="card">
       <div className="card-head">
-        <h2>Automated fixes: Sentinel's fixer</h2>
+        <h2>Sentinel's fixer</h2>
         <div className="right">
           {f.connected ? <span className="badge ok">● connected</span> : <span className="badge bad">not connected</span>}
         </div>
       </div>
       <p className="small muted">
-        When <strong>Auto-fix</strong> is on for a service (Settings → Services), or someone presses <strong>Fix it</strong> on an issue, the issue is queued
-        for the fixer container. It runs Claude Code on the repository and opens a pull request that says <code>Fixes #N</code>; Sentinel links it on the issue.
+        The fixer container runs Claude Code next to Sentinel. It does the fixes when they run in Sentinel's fixer, and the investigations when Settings → AI
+        uses <strong>Claude Code in the fixer</strong>.
       </p>
+      {f.needs_sign_in && !d.settings.has_claude && (
+        <div className="notice small" style={{ marginBottom: 10 }}>
+          The fixer is waiting for a Claude sign-in. Add one below; it picks up work on its next check, within a minute.
+        </div>
+      )}
       <div className="kv" style={{ gridTemplateColumns: "160px 1fr" }}>
         <span className="k">Last asked for work</span>
         <span className="v">{f.last_seen ? ago(f.last_seen) : "never"}</span>
         <span className="k">Claude sign-in</span>
-        <span className="v">
-          {f.auth === "subscription" ? "your Claude subscription (CLAUDE_CODE_OAUTH_TOKEN)" : f.auth === "api_key" ? "API key (billed per token)" : "—"}
-        </span>
+        <span className="v">{signInText(d)}</span>
         <span className="k">Working on</span>
         <span className="v">
           {f.working
@@ -209,33 +291,72 @@ function FixerCard({ f }: { f: FixerStatus }) {
           </>
         )}
       </div>
+
+      <h3 style={{ marginTop: 16 }}>Claude sign-in and models</h3>
+      <div className="form-grid">
+        <label className="field">
+          Sign in with
+          <select value={kind} onChange={(e) => setKind(e.target.value as "subscription" | "api_key")}>
+            <option value="subscription">Claude subscription (token from claude setup-token)</option>
+            <option value="api_key">Anthropic API key (billed per token)</option>
+          </select>
+        </label>
+        <label className="field">
+          {kind === "subscription" ? "Token" : "API key"}
+          <input
+            type="password"
+            autoComplete="new-password"
+            className="mono"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder={d.settings.has_claude ? "•••••• (stored; paste to replace)" : kind === "subscription" ? "sk-ant-oat01-…" : "sk-ant-api03-…"}
+          />
+          <span className="help">
+            {kind === "subscription" ? (
+              <>
+                Run <code>claude setup-token</code> on your own machine and paste the token. Fixes count against your plan's usage limits.
+              </>
+            ) : (
+              "Create one in the Claude Console."
+            )}{" "}
+            It is stored in Sentinel's database and only sent to the fixer.
+          </span>
+        </label>
+        <label className="field">
+          Model for fixes
+          <input className="mono" value={model} onChange={(e) => setModel(e.target.value)} placeholder="Claude Code's default" />
+        </label>
+        <label className="field">
+          Model for investigations
+          <input className="mono" value={analyzeModel} onChange={(e) => setAnalyzeModel(e.target.value)} placeholder="the fixer's default" />
+        </label>
+      </div>
+      <div className="row" style={{ marginTop: 12, gap: 8 }}>
+        <button className="primary" onClick={save} disabled={!dirty}>
+          Save
+        </button>
+        {d.settings.has_claude && <button onClick={remove}>Remove sign-in</button>}
+      </div>
       {!f.connected && (
-        <ol className="steps small" style={{ marginTop: 12 }}>
-          <li>
-            On your own machine run <code>claude setup-token</code> and put the token in <code>deploy/.env</code> as <code>CLAUDE_CODE_OAUTH_TOKEN</code>.
-          </li>
-          <li>
-            Set the same <code>FIXER_TOKEN</code> for Sentinel and the fixer, then <code>docker compose --profile fixer up -d --build</code>.
-          </li>
-          <li>
-            Give the GitHub App <strong>Contents</strong> and <strong>Pull requests</strong> (read and write) and accept the new permissions on each installation.
-          </li>
-        </ol>
+        <p className="small muted" style={{ marginTop: 12 }}>
+          The fixer starts with Sentinel (<code>docker compose up -d --build</code>) and connects by itself.
+        </p>
+      )}
+      {d.mode === "fixer" && (
+        <p className="small muted" style={{ marginTop: 8 }}>
+          For fixes, give the GitHub App <strong>Contents</strong> and <strong>Pull requests</strong> (read and write) and accept the new permissions on each
+          installation.
+        </p>
       )}
     </div>
   );
 }
 
-function AutofixSetup() {
+function WorkflowCard({ d }: { d: AutofixInfo }) {
   const toast = useToast();
-  const info = useAsync(() => api.get<AutofixInfo>("/api/autofix"), [], 15000);
-  if (!info.data) return null;
-  if (info.data.mode === "fixer") return <FixerCard f={info.data.fixer!} />;
-  const fixerStatus = info.data.fixer;
-  const wf = { data: info.data as Required<Pick<AutofixInfo, "path" | "workflow" | "label" | "note">> };
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(wf.data!.workflow);
+      await navigator.clipboard.writeText(d.workflow);
       toast("Workflow copied");
     } catch {
       toast("Could not copy; select the text instead", true);
@@ -244,21 +365,17 @@ function AutofixSetup() {
   return (
     <div className="card">
       <div className="card-head">
-        <h2>Automated fixes</h2>
+        <h2>GitHub Actions workflow</h2>
         <div className="right">
           <button className="small" onClick={copy}>
             Copy workflow
           </button>
         </div>
       </div>
-      <p className="small muted">
-        When <strong>Auto-fix</strong> is on for a service (Settings → Services), or someone presses <strong>Fix it</strong> on an issue, Sentinel adds the{" "}
-        <code>{wf.data.label}</code> label to the GitHub issue. In each repository that should get fixes:
-      </p>
+      <p className="small muted">In each repository that should get fixes:</p>
       <ol className="steps small">
         <li>
-          Save this workflow as <code>{wf.data.path}</code>. It runs Claude Code in GitHub Actions, which fixes the error and opens a pull request with{" "}
-          <code>Fixes #N</code>.
+          Save this workflow as <code>{d.path}</code>. It runs Claude Code in GitHub Actions when Sentinel adds the <code>{d.label}</code> label.
         </li>
         <li>
           Add the repository secret <code>ANTHROPIC_API_KEY</code> (or install the Claude GitHub App with <code>claude /install-github-app</code> and use{" "}
@@ -266,21 +383,11 @@ function AutofixSetup() {
         </li>
         <li>Add the setup your tests need (Go, Node, …) before the Claude step.</li>
       </ol>
-      {wf.data.note && <div className="notice small" style={{ marginBottom: 8 }}>{wf.data.note}</div>}
-      <p className="small muted">
-        Sentinel follows the pull request on the issue's timeline and shows it on the issue; merging it closes the issue. No extra GitHub App permissions are
-        needed.
-      </p>
+      {d.note && <div className="notice small" style={{ marginBottom: 8 }}>{d.note}</div>}
       <details>
         <summary className="small muted">Show the workflow</summary>
-        <pre className="code" style={{ maxHeight: 420 }}>{wf.data.workflow}</pre>
+        <pre className="code" style={{ maxHeight: 420 }}>{d.workflow}</pre>
       </details>
-      {fixerStatus && (
-        <p className="small muted" style={{ marginTop: 10 }}>
-          Sentinel's fixer container (for investigations):{" "}
-          {fixerStatus.connected ? <span className="badge ok">connected</span> : <span className="badge bad">not connected</span>}
-        </p>
-      )}
     </div>
   );
 }

@@ -126,9 +126,15 @@ func run(log *slog.Logger) error {
 	if static == nil {
 		log.Warn("dashboard UI not embedded; build it with: npm --prefix web ci && npm --prefix web run build")
 	}
+	fixerToken, err := server.EnsureFixerToken(context.Background(), st, cfg.FixerToken, cfg.FixerTokenFile)
+	if fixerToken == "" {
+		return err
+	} else if err != nil {
+		log.Warn("the fixer container cannot read Sentinel's token; set the same FIXER_TOKEN for both", "err", err)
+	}
 	srv := &server.Server{
 		Store: st, App: app, PublicURL: cfg.PublicURL, Dispatcher: dispatcher, Prober: prober, Static: static, Log: log,
-		AI: provider, AIEnvKey: envKey, Analyzer: analyzer, Puller: &ai.Puller{}, Groups: rep, FixerToken: cfg.FixerToken,
+		AI: provider, AIEnvKey: envKey, Analyzer: analyzer, Puller: &ai.Puller{}, Groups: rep, FixerToken: fixerToken, SetFixMode: rep.SetFixMode,
 		Auth: server.AuthConfig{Mode: cfg.DashboardAuth, AllowedUsers: cfg.AllowedUsers, AllowedOrg: cfg.AllowedOrg},
 		Info: server.Info{
 			DryRun: cfg.DryRun, TokenMode: app == nil && cfg.GitHubToken != "", EnvDefaultRepo: cfg.GitHubRepo,
@@ -136,6 +142,8 @@ func run(log *slog.Logger) error {
 			DownAfter: cfg.DownAfter.String(), OTLPAddr: cfg.OTLPAddr, TraceRetention: cfg.TraceRetention.String(), FixLabel: cfg.FixLabel, FixMode: cfg.FixMode,
 		},
 	}
+
+	srv.InitFixer(context.Background())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
