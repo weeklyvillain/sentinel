@@ -17,10 +17,13 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && npm cache
 # Claude Code runs as "agent", the fixer (which holds FIXER_TOKEN and the
 # per-job GitHub token) as root, so the agent cannot read them from /proc.
 RUN useradd --create-home --uid 10001 agent && mkdir -p /work && chmod 711 /work
-# Add the toolchains your tests need here, e.g.:
-#   COPY --from=golang:1.26 /usr/local/go /usr/local/go
-#   ENV PATH=/usr/local/go/bin:$PATH
-# and allow them with FIXER_EXTRA_TOOLS="Bash(go test:*)".
+# Toolchains for the commands Claude may run (Settings → GitHub → Sentinel's
+# fixer): Go is included, Node and npm come with the base image. A go.mod
+# that needs a newer Go downloads it (GOTOOLCHAIN=auto). No C compiler:
+# builds run with CGO_ENABLED=0. Add more toolchains here, e.g.
+#   COPY --from=rust:1-slim-bookworm /usr/local/cargo /usr/local/cargo
+COPY --from=golang:1.26-bookworm /usr/local/go /usr/local/go
+ENV PATH=/usr/local/go/bin:$PATH CGO_ENABLED=0 GOTOOLCHAIN=auto
 COPY --from=build /out/sentinel-fixer /usr/local/bin/sentinel-fixer
 ENV FIXER_WORKDIR=/work FIXER_AGENT_UID=10001 FIXER_AGENT_HOME=/home/agent
 ENTRYPOINT ["/usr/local/bin/sentinel-fixer"]

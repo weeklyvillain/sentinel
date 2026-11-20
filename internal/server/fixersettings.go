@@ -33,6 +33,35 @@ type FixerSettings struct {
 	ClaudeToken  string `json:"claude_token,omitempty"`
 	Model        string `json:"model,omitempty"`         // fixes; "" = FIXER_MODEL
 	AnalyzeModel string `json:"analyze_model,omitempty"` // investigations; "" = FIXER_ANALYZE_MODEL
+	// Effort and AnalyzeEffort are Claude Code's --effort; "" = its default.
+	Effort        string `json:"effort,omitempty"`
+	AnalyzeEffort string `json:"analyze_effort,omitempty"`
+	// Commands Claude may run in fix jobs (prefixes like "go test"), on top
+	// of the fixer's FIXER_EXTRA_TOOLS. nil = never set: DefaultFixerCommands.
+	Commands *[]string `json:"commands,omitempty"`
+}
+
+// DefaultFixerCommands are allowed until the dashboard sets the list: the
+// Go toolchain is in the fixer image, and these only build and test.
+var DefaultFixerCommands = []string{"go build", "go test", "go vet", "gofmt"}
+
+func (fs FixerSettings) commands() []string {
+	if fs.Commands == nil {
+		return DefaultFixerCommands
+	}
+	return *fs.Commands
+}
+
+// validCommand: a command prefix without shell syntax, so an allowance for
+// "go test" cannot be stretched into running something else.
+func validCommand(c string) error {
+	if c == "" || len(c) > 100 {
+		return errors.New("a command must be 1 to 100 characters")
+	}
+	if strings.ContainsAny(c, ";&|`$<>()\\\"'*\n\r\t") {
+		return fmt.Errorf("%q: give only the command and its fixed arguments, without shell syntax or wildcards", c)
+	}
+	return nil
 }
 
 // EnsureFixerToken returns the token the fixer authenticates with: envToken
@@ -113,20 +142,26 @@ func (s *Server) fixerJobAuth(job *fixjob.Job) {
 		job.Claude = &fixjob.ClaudeAuth{Kind: fs.ClaudeKind, Token: fs.ClaudeToken}
 	}
 	if job.Kind == fixjob.KindAnalyze {
-		job.Model = fs.AnalyzeModel
+		job.Model, job.Effort = fs.AnalyzeModel, fs.AnalyzeEffort
 	} else {
-		job.Model = fs.Model
+		job.Model, job.Effort = fs.Model, fs.Effort
+		job.Commands = fs.commands()
 	}
 }
 
 // fixerView is the settings as the dashboard sees them: never the token.
 type fixerView struct {
-	Mode         string `json:"mode"`
-	EnvMode      string `json:"env_mode"`
-	ClaudeKind   string `json:"claude_kind,omitempty"`
-	HasClaude    bool   `json:"has_claude"`
-	Model        string `json:"model"`
-	AnalyzeModel string `json:"analyze_model"`
+	Mode          string   `json:"mode"`
+	EnvMode       string   `json:"env_mode"`
+	ClaudeKind    string   `json:"claude_kind,omitempty"`
+	HasClaude     bool     `json:"has_claude"`
+	Model         string   `json:"model"`
+	AnalyzeModel  string   `json:"analyze_model"`
+	Commands      []string `json:"commands"`
+	Effort        string   `json:"effort"`
+	AnalyzeEffort string   `json:"analyze_effort"`
+	// DefaultCommands is what "reset" goes back to.
+	DefaultCommands []string `json:"default_commands"`
 }
 
 func (s *Server) fixerView() fixerView {
@@ -136,18 +171,22 @@ func (s *Server) fixerView() fixerView {
 		env = reporter.FixModeActions
 	}
 	return fixerView{Mode: s.fixMode(), EnvMode: env, ClaudeKind: fs.ClaudeKind, HasClaude: fs.ClaudeToken != "",
-		Model: fs.Model, AnalyzeModel: fs.AnalyzeModel}
+		Model: fs.Model, AnalyzeModel: fs.AnalyzeModel, Commands: fs.commands(), DefaultCommands: DefaultFixerCommands,
+		Effort: fs.Effort, AnalyzeEffort: fs.AnalyzeEffort}
 }
 
 // fixerInput is what the dashboard sends; nil fields stay as they are. An
 // empty claude_token keeps the stored one, clear_claude removes it.
 type fixerInput struct {
-	Mode         *string `json:"mode"`
-	ClaudeKind   string  `json:"claude_kind"`
-	ClaudeToken  string  `json:"claude_token"`
-	ClearClaude  bool    `json:"clear_claude"`
-	Model        *string `json:"model"`
-	AnalyzeModel *string `json:"analyze_model"`
+	Mode          *string   `json:"mode"`
+	ClaudeKind    string    `json:"claude_kind"`
+	ClaudeToken   string    `json:"claude_token"`
+	ClearClaude   bool      `json:"clear_claude"`
+	Model         *string   `json:"model"`
+	AnalyzeModel  *string   `json:"analyze_model"`
+	Commands      *[]string `json:"commands"`
+	Effort        *string   `json:"effort"`
+	AnalyzeEffort *string   `json:"analyze_effort"`
 }
 
 func applyFixerInput(fs FixerSettings, in fixerInput) (FixerSettings, error) {
@@ -183,6 +222,38 @@ func applyFixerInput(fs FixerSettings, in fixerInput) (FixerSettings, error) {
 	}
 	if in.AnalyzeModel != nil {
 		fs.AnalyzeModel = strings.TrimSpace(*in.AnalyzeModel)
+	}
+	for _, e := range []struct {
+		in  *string
+		out *string
+	}{{in.Effort, &fs.Effort}, {in.AnalyzeEffort, &fs.AnalyzeEffort}} {
+		if e.in == nil {
+			continue
+		}
+		v := strings.ToLower(strings.TrimSpace(*e.in))
+		if !validEffort(v) {
+			return fs, fmt.Errorf("effort must be one of %s, or empty for Claude Code's default", strings.Join(EffortLevels, ", "))
+		}
+		*e.out = v
+	}
+	if in.Commands != nil {
+		cmds := []string{}
+		seen := map[string]bool{}
+		for _, c := range *in.Commands {
+			c = strings.Join(strings.Fields(c), " ")
+			if c == "" || seen[c] {
+				continue
+			}
+			if err := validCommand(c); err != nil {
+				return fs, err
+			}
+			seen[c] = true
+			cmds = append(cmds, c)
+		}
+		if len(cmds) > 50 {
+			return fs, errors.New("at most 50 commands")
+		}
+		fs.Commands = &cmds
 	}
 	return fs, nil
 }

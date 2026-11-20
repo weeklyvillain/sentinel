@@ -47,6 +47,12 @@ type Job struct {
 	// RunID is Sentinel's record of this attempt: the fixer sends its log
 	// to /fixer/runs/{RunID}/log and the result names it.
 	RunID int64 `json:"run_id,omitempty"`
+	// Commands are shell command prefixes Claude may run in a fix job
+	// besides reading and editing files, e.g. "go test" (set in the
+	// dashboard); the fixer allows each as Bash(<prefix>:*).
+	Commands []string `json:"commands,omitempty"`
+	// Effort is Claude Code's --effort (low … max); empty is its default.
+	Effort string `json:"effort,omitempty"`
 }
 
 // Log line kinds: the fixer's own steps and Claude Code's.

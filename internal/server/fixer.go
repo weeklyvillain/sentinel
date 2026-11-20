@@ -36,6 +36,7 @@ type fixerState struct {
 	// dashboard has a Claude sign-in, so it gets none.
 	needsSignIn bool
 	settings    FixerSettings
+	models      modelCache
 }
 
 // FixerStatus is the fixer as the dashboard sees it.
