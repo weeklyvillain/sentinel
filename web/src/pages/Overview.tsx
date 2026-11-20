@@ -1,5 +1,7 @@
+import { useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { api, Check, Overview as OverviewT } from "../api";
+import { api, Overview as OverviewT, Status } from "../api";
+import { useStatus } from "../shared";
 import { bucketKeys, Legend, StackedBars } from "../components/charts";
 import { Empty, ErrorNote, Loading, RangePicker, Stat, StatusBadge, useAsync } from "../components/ui";
 import { ago, fmtNum, LEVEL_COLORS, serviceUp } from "../util";
@@ -11,9 +13,9 @@ export default function Overview() {
   const range = params.get("range") ?? "24h";
   const nav = useNavigate();
   const { data, error } = useAsync(() => api.get<OverviewT>(`/api/overview?range=${range}`), [range], 30000);
-  const checks = useAsync(() => api.get<Check[]>("/api/checks"), [], 30000);
-  const activeChecks = (checks.data ?? []).filter((c) => c.enabled);
-  const checksDown = activeChecks.filter((c) => c.state === "down");
+  const status = useStatus().data;
+  const activeChecks = status?.checks.active ?? 0;
+  const checksDown = status?.checks.down ?? [];
 
   return (
     <>
@@ -28,6 +30,7 @@ export default function Overview() {
         <Loading />
       ) : (
         <div className="stack">
+          {status && <SetupChecklist setup={status.setup} />}
           <div className="grid stats">
             <Stat
               label="Services"
@@ -39,11 +42,11 @@ export default function Overview() {
             <Stat label={`Errors (${range})`} value={fmtNum(data.errors)} hint={`${fmtNum(data.logs)} log lines`} tone={data.errors ? "bad" : undefined} />
             <Stat label={`New issues (${range})`} value={fmtNum(data.issues_in_range)} />
             <Stat label="Alarms firing" value={data.firing_alarms.length} tone={data.firing_alarms.length ? "bad" : "ok"} />
-            {activeChecks.length > 0 && (
+            {activeChecks > 0 && (
               <Stat
                 label="Uptime checks"
-                value={`${activeChecks.length - checksDown.length}/${activeChecks.length}`}
-                hint={checksDown.length ? `down: ${checksDown.map((c) => c.name).join(", ")}` : "all passing"}
+                value={`${activeChecks - checksDown.length}/${activeChecks}`}
+                hint={checksDown.length ? `down: ${checksDown.join(", ")}` : "all passing"}
                 tone={checksDown.length ? "bad" : "ok"}
               />
             )}
@@ -161,5 +164,62 @@ export default function Overview() {
         </div>
       )}
     </>
+  );
+}
+
+const SETUP_STEPS: { key: keyof Status["setup"]; title: string; to: string; how: string }[] = [
+  { key: "telemetry", title: "Send telemetry", to: "/settings/services", how: "Point an OpenTelemetry exporter or Collector at Sentinel's OTLP port." },
+  { key: "github", title: "Connect GitHub", to: "/settings/github", how: "Configure the GitHub App (or a token) so issues can be filed." },
+  { key: "repo", title: "Choose where issues go", to: "/settings/github", how: "Pick a default repository, or one per service." },
+  { key: "watched", title: "Watch a service", to: "/settings/services", how: "Switch on Watch to be told when a service goes quiet." },
+  { key: "webhook", title: "Add a webhook", to: "/settings/webhooks", how: "Get issues and outages in Slack, Discord or anywhere else." },
+];
+
+/** Getting-started steps; hidden once all are done or when dismissed. */
+function SetupChecklist({ setup }: { setup: Status["setup"] }) {
+  const [hidden, setHidden] = useState(() => {
+    try {
+      return localStorage.getItem("sentinel.setup-hidden") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const done = SETUP_STEPS.filter((s) => setup[s.key]).length;
+  if (hidden || done === SETUP_STEPS.length) return null;
+  const hide = () => {
+    setHidden(true);
+    try {
+      localStorage.setItem("sentinel.setup-hidden", "1");
+    } catch {
+      /* private mode: hide for this visit only */
+    }
+  };
+  return (
+    <div className="card">
+      <div className="card-head">
+        <h2>Get set up</h2>
+        <span className="faint small">
+          {done} of {SETUP_STEPS.length} done
+        </span>
+        <div className="right">
+          <button className="small ghost" onClick={hide}>
+            Hide
+          </button>
+        </div>
+      </div>
+      <ol className="setup">
+        {SETUP_STEPS.map((s) => (
+          <li key={s.key} className={setup[s.key] ? "done" : ""}>
+            <span className="check-mark" aria-hidden>
+              {setup[s.key] ? "✓" : ""}
+            </span>
+            <div>
+              {setup[s.key] ? <span>{s.title}</span> : <Link to={s.to}>{s.title}</Link>}
+              <div className="small faint">{s.how}</div>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 }

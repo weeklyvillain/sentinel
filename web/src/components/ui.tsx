@@ -37,6 +37,28 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[], pollMs = 0) {
   return { data, error, loading, reload, setData };
 }
 
+/**
+ * Runs a change and reports a failure as a toast, so callers skip the
+ * try/catch. `ok` is toasted on success (a function gets the result).
+ * Resolves to the result, or undefined when it failed.
+ */
+export function useAction() {
+  const toast = useToast();
+  return useCallback(
+    async <T,>(fn: () => Promise<T>, ok?: string | ((r: T) => string)): Promise<T | undefined> => {
+      try {
+        const r = await fn();
+        if (ok) toast(typeof ok === "function" ? ok(r) : ok);
+        return r;
+      } catch (e) {
+        toast((e as Error).message, true);
+        return undefined;
+      }
+    },
+    [toast],
+  );
+}
+
 // --- toast ---
 
 const ToastCtx = createContext<(msg: string, bad?: boolean) => void>(() => {});
@@ -141,7 +163,11 @@ export function Seg<T extends string>({ value, options, onChange }: { value: T; 
   );
 }
 
-/** A page made of tabs, one per sub-page, routed as `${base}/${tab.path}`. */
+/**
+ * A page made of tabs, one per sub-page, routed as `${base}/${tab.path}`
+ * (a tab with path "" lives at `base` itself). The tab comes from the
+ * `:tab` route parameter unless the route passes it.
+ */
 export interface SectionTab {
   path: string;
   label: string;
@@ -149,10 +175,13 @@ export interface SectionTab {
   count?: number;
 }
 
-export function Section({ title, base, tabs }: { title: string; base: string; tabs: SectionTab[] }) {
-  const { tab } = useParams();
-  const current = tabs.find((t) => t.path === tab);
-  if (!current) return <Navigate to={`${base}/${tabs[0].path}`} replace />;
+const tabURL = (base: string, path: string) => (path ? `${base}/${path}` : base);
+
+export function Section({ title, base, tabs, tab }: { title: string; base: string; tabs: SectionTab[]; tab?: string }) {
+  const params = useParams();
+  const want = tab ?? params.tab ?? "";
+  const current = tabs.find((t) => t.path === want);
+  if (!current) return <Navigate to={tabURL(base, tabs[0].path)} replace />;
   return (
     <>
       <div className="page-head section-head">
@@ -160,7 +189,7 @@ export function Section({ title, base, tabs }: { title: string; base: string; ta
       </div>
       <nav className="tabs" aria-label={title}>
         {tabs.map((t) => (
-          <NavLink key={t.path} to={`${base}/${t.path}`}>
+          <NavLink key={t.path} to={tabURL(base, t.path)} end>
             {t.label}
             {t.count ? <span className="count">{t.count}</span> : null}
           </NavLink>

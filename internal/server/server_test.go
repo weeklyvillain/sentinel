@@ -256,7 +256,7 @@ func TestEmptyInstallReturnsNoNullLists(t *testing.T) {
 	h := newHarness(t, AuthConfig{Mode: "none"}, "x")
 	for _, path := range []string{
 		"/api/overview", "/api/services", "/api/groups", "/api/logs?range=1h",
-		"/api/checks", "/api/alarms", "/api/webhooks", "/api/metrics",
+		"/api/checks", "/api/alarms", "/api/webhooks", "/api/metrics", "/api/status",
 	} {
 		resp, body := h.do("GET", path, "", false)
 		if resp.StatusCode != 200 {
@@ -286,6 +286,20 @@ func TestServiceFlagsAPI(t *testing.T) {
 	}
 	if resp, _ := h.do("PATCH", "/api/services/nope", `{"watch":true}`, true); resp.StatusCode != 404 {
 		t.Fatalf("unknown service: %d", resp.StatusCode)
+	}
+}
+
+func TestStatusAPI(t *testing.T) {
+	h := newHarness(t, AuthConfig{Mode: "none"}, "x")
+	_, body := h.do("GET", "/api/status", "", false)
+	if !strings.Contains(body, `"telemetry":false`) || !strings.Contains(body, `"watched":false`) || !strings.Contains(body, `"analyzing":0`) {
+		t.Fatalf("fresh status: %s", body)
+	}
+	h.st.TouchService(context.Background(), "api", "prod", time.Now())
+	h.do("PATCH", "/api/services/api", `{"watch":true}`, true)
+	_, body = h.do("GET", "/api/status", "", false)
+	if !strings.Contains(body, `"telemetry":true`) || !strings.Contains(body, `"watched":true`) {
+		t.Fatalf("status after a watched service: %s", body)
 	}
 }
 
