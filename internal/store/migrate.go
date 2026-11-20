@@ -144,7 +144,7 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(schemaDashboards); err != nil {
 		return err
 	}
-	for _, sch := range []string{schemaTraces, schemaGroupsExt, schemaAlerting, schemaMetricHist} {
+	for _, sch := range []string{schemaTraces, schemaGroupsExt, schemaAlerting, schemaMetricHist, schemaFixerRuns} {
 		if _, err := s.db.Exec(sch); err != nil {
 			return err
 		}
@@ -181,6 +181,8 @@ func (s *Store) migrate() error {
 		{"groups", "fix_checked_at", "INTEGER NOT NULL DEFAULT 0"},
 		{"groups", "fix_started_at", "INTEGER NOT NULL DEFAULT 0"},
 		{"groups", "fix_summary", "TEXT NOT NULL DEFAULT ''"},
+		// Every pull request of a fix across repositories (JSON).
+		{"groups", "fix_prs", "TEXT NOT NULL DEFAULT '[]'"},
 		{"groups", "triage_verdict", "TEXT NOT NULL DEFAULT ''"},
 		{"groups", "triage_severity", "TEXT NOT NULL DEFAULT ''"},
 		{"groups", "triage_reason", "TEXT NOT NULL DEFAULT ''"},

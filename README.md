@@ -75,39 +75,61 @@ app ──OTLP──▶ Collector ──otlphttp──▶ Sentinel :4318 ──�
 Sentinel can hand an issue to Claude Code, which fixes it and opens a pull
 request that says `Fixes #N`. A fix is asked for automatically for each new
 issue of a service with **Auto-fix** on (Settings → Services, off by default),
-or when someone presses **Fix it** on an issue. Only error issues are sent,
+when someone presses **Fix it** on an issue, or for every open error issue
+at once with **Fix all open issues** on the Issues page (issues with a fix
+queued, running or in an open pull request are skipped). Only error issues are sent,
 not outages or performance issues. Claude Code runs in one of two places,
-chosen with `AUTOFIX_MODE`:
+chosen under **Settings → Fixer** (`AUTOFIX_MODE` is the
+default until you pick one there):
 
-### `AUTOFIX_MODE=fixer`: the fixer container next to Sentinel
+### Sentinel's fixer: the fixer container next to Sentinel
 
-`sentinel-fixer` (`Dockerfile.fixer`, the `fixer` Compose profile) runs the
-official Claude Code CLI on the Sentinel server. It signs in with
-**your Claude subscription**: run `claude setup-token` on your own machine
-and put the token in `deploy/.env` as `CLAUDE_CODE_OAUTH_TOKEN` (or set
-`FIXER_ANTHROPIC_API_KEY` to bill an API key instead). Fixes then count
-against your plan's usage limits, which assume ordinary individual use.
-Sentinel never sees or stores the Claude credential, and there is no
-"Sign in with Claude" in the dashboard: Anthropic does not allow other apps to
-collect Claude logins.
+`sentinel-fixer` (`Dockerfile.fixer`, the `fixer` Compose service) runs the
+official Claude Code CLI on the Sentinel server. It starts with
+`docker compose up -d --build` and idles until there is work. Everything
+else is set in the dashboard, under **Settings → Fixer**:
 
-```bash
-# deploy/.env
-AUTOFIX_MODE=fixer
-FIXER_TOKEN=<openssl rand -hex 32>
-CLAUDE_CODE_OAUTH_TOKEN=<from claude setup-token>
-FIXER_EXTRA_TOOLS=Bash(go test:*)   # test commands the agent may run
-```
+- **Claude sign-in**: your **Claude subscription** (run `claude setup-token`
+  on your own machine and paste the token) or an Anthropic API key, billed
+  per token. Fixes on a subscription count against your plan's usage
+  limits, which assume ordinary individual use. The token is stored in
+  Sentinel's database and only handed to the fixer with each job; the
+  dashboard never shows it again. There is no "Sign in with Claude" button:
+  Anthropic does not allow other apps to collect Claude logins.
+- **Models and effort** for fixes and for investigations (default: Claude
+  Code's). The model picker lists the models your sign-in can use (from the
+  Anthropic Models API) plus the aliases (`opus`, `sonnet`, `haiku`, `fable`)
+  that always pick the latest of a family; effort is Claude Code's
+  `--effort` (`low` … `max`).
+- **Commands Claude may run** in fixes, one per line, each with any
+  arguments: `go test` allows `go test ./...`. The default is `go build`,
+  `go test`, `go vet` and `gofmt`; shell syntax (`;`, `&&`, `|`, `$`) is
+  refused. The fixer image has Go (with `CGO_ENABLED=0`; a newer Go from
+  `go.mod` is downloaded) and Node; add other toolchains to
+  `Dockerfile.fixer`. Investigations only ever read.
+- **What Claude may do in fixes**: only those commands (default), **auto
+  mode** (Claude Code's `--permission-mode auto`: it runs what the fix needs
+  and a safety check blocks risky actions) or **everything** (no checks).
+  The error report is telemetry, which users or attackers can influence, so
+  with auto mode or everything a crafted report could make Claude run
+  commands in the fixer container (network access, the Claude sign-in in
+  its environment). It still cannot read Sentinel's or GitHub's tokens, and
+  changes under `.github/` are never pushed.
 
-```bash
-docker compose --profile fixer up -d --build
-```
+Sentinel and the fixer share a generated token through the `fixer-auth`
+volume, so neither needs `FIXER_TOKEN`. Environment variables still work as
+defaults: `CLAUDE_CODE_OAUTH_TOKEN` / `FIXER_ANTHROPIC_API_KEY` sign the
+fixer in when the dashboard has no sign-in, `FIXER_MODEL` /
+`FIXER_ANALYZE_MODEL` are used when no model is set there, and a
+`FIXER_TOKEN` in `deploy/.env` replaces the generated token for both. Test
+`FIXER_EXTRA_TOOLS` (e.g. `Bash(make test:*)`) adds commands for every
+fix on top of the dashboard's list.
 
 The GitHub App also needs **Contents** and **Pull requests** (read and write);
 accept the new permissions on each installation. For each job:
 
-1. The fixer asks Sentinel for work (`POST /fixer/claim`, bearer
-   `FIXER_TOKEN`) and gets the error report (samples, stack traces, tags,
+1. The fixer asks Sentinel for work (`POST /fixer/claim`, bearer the
+   shared token) and gets the error report (samples, stack traces, tags,
    breadcrumbs) and a token that can push to **that one repository** for an
    hour.
 2. It clones the repository and runs `claude -p` on a new branch. Claude may
@@ -121,16 +143,46 @@ accept the new permissions on each installation. For each job:
 4. Sentinel follows the pull request like below. A job without a result after
    an hour counts as failed and can be retried.
 
-Settings → GitHub shows whether the fixer is connected, how it signs in and
-what it is working on. `FIXER_TIMEOUT` (30m), `FIXER_MAX_TURNS` (60) and
-`FIXER_MODEL` tune a run.
+Settings → Fixer shows whether the fixer is connected, how it signs in and
+what it is working on; it gets no work while it has no Claude sign-in.
+**Issues → Fixer** lists every run (fixes and investigations) with its
+result, model, turns, tokens and the cost Claude Code reports (on a
+subscription that is the API-equivalent, not a bill), plus totals for the
+last day, week and month. A run's page shows its log as it works: the
+fixer's steps, Claude's messages and each tool call with its result, with
+the repository and Claude tokens redacted. Logs are kept for 30 days, the
+runs for a year.
+`FIXER_TIMEOUT` (30m) and `FIXER_MAX_TURNS` (60) tune a run.
+
+### Fixes across repositories
+
+An error often involves more than one service: a frontend sending what the
+API rejects, a caller and the service it calls. When the error's traces
+show other services with a repository (Settings → Services), the fix job
+brings up to three of those repositories along: the fixer clones them side
+by side in one workspace, tells Claude which folder is which service, and
+lets it change whichever need it (both sides of a contract, for example).
+
+- Every changed repository gets a pull request on the same branch. The
+  first says `Fixes owner/repo#N` (closing the issue), the others say they
+  are part of that fix; once all are open, each one's description lists the
+  others ("Merge together").
+- Nothing is pushed if one of the repositories needs a change under
+  `.github/`, which the fixer never pushes: half a fix is worse than none.
+- The issue gets one comment with all pull requests; the issue page lists
+  them with their state, and the fix counts as merged only when every one
+  is merged (a closed one marks it closed). The other repositories' pull
+  requests mention the issue, so Sentinel follows them on its timeline.
+- Each repository gets its own push token, scoped to that repository; the
+  GitHub App must be installed on all of them with Contents and Pull
+  requests write.
 
 ### Investigations: is it worth fixing?
 
 The same container can also do the AI analysis that writes each issue, in
 place of the Anthropic API (Haiku, billed per token): choose **Claude Code in
-the fixer** under Settings → AI (provider `claude-code`; Sentinel needs
-`FIXER_TOKEN`, `AUTOFIX_MODE` can stay `actions`). For every new error the
+the fixer** under Settings → AI (provider `claude-code`; it uses the
+fixer's Claude sign-in, and fixes can still run in GitHub Actions). For every new error the
 fixer clones the service's repository with a read-only token (Contents read
 is enough), and Claude Code reads the code the stack trace points at, writes
 the issue's title, summary, likely cause and next steps, and gives a verdict:
@@ -144,13 +196,13 @@ the issue's title, summary, likely cause and next steps, and gives a verdict:
 
 The verdict, severity and reason are in the issue ("Worth fixing?") and on
 the Issues page. Investigations only read: `Read`, `Glob`, `Grep` and
-`git log/show/blame`. They use `FIXER_ANALYZE_MAX_TURNS` (25) and
-`FIXER_ANALYZE_MODEL` (default: `FIXER_MODEL`). The fix job later gets the
+`git log/show/blame`. They use `FIXER_ANALYZE_MAX_TURNS` (25) and the
+investigation model set in the dashboard (or `FIXER_ANALYZE_MODEL`). The fix job later gets the
 investigation along. When the fixer does not pick an error up within
 20 minutes (or does not finish within 45), its issue is filed with the
 template so nothing waits forever.
 
-### `AUTOFIX_MODE=actions` (default): a workflow in each repository
+### GitHub Actions (default): a workflow in each repository
 
 Sentinel adds the `AUTOFIX_LABEL` label (default `sentinel-autofix`) to the
 GitHub issue and Claude Code runs in the repository's GitHub Actions:
@@ -158,7 +210,7 @@ GitHub issue and Claude Code runs in the repository's GitHub Actions:
 1. The repository's workflow reacts to the label: Claude Code reads the
    issue, fixes the error, runs the tests and opens a pull request with
    `Fixes #N`. When it finds no confident fix it comments on the issue
-   instead. Get the workflow from **Settings → GitHub → Automated fixes**,
+   instead. Get the workflow from **Settings → Fixer**,
    with this Sentinel's label and GitHub App bot filled in, and save it as
    `.github/workflows/sentinel-autofix.yml`. The repository needs the secret
    `ANTHROPIC_API_KEY` (or a `claude_code_oauth_token`).
@@ -265,32 +317,49 @@ Logs and metric points are kept for `LOG_RETENTION` / `METRIC_RETENTION`
 pruned every 10 minutes. Request statistics follow `METRIC_RETENTION`. Everything is redacted before
 it is stored.
 
+### First start: Sentinel sets itself up
+
+There is no GitHub App to create by hand and no key to copy. On first start
+Sentinel prints a one-time **setup code** in its log; open the dashboard and:
+
+1. **Enter the setup code** (`docker compose logs sentinel | grep "setup code"`).
+   It proves you can read the server's log, so nobody else can claim a fresh
+   install.
+2. **Create Sentinel's GitHub App** on your account or an organization. Sentinel
+   uses GitHub's [manifest flow](https://docs.github.com/apps/sharing-github-apps/registering-a-github-app-from-a-manifest):
+   GitHub opens with the app filled in (Issues, Contents and Pull requests
+   read and write, Metadata and organization Members read, callback and setup
+   URLs, no webhook), you press **Create GitHub App**, and GitHub hands the
+   app's ID, private key and OAuth credentials back to Sentinel, which keeps
+   them in its database and restarts itself to use them.
+3. **Install it and sign in with GitHub.** The first person to sign in from the
+   browser that entered the code becomes the admin; the code is then gone.
+
+Afterwards everything is in the dashboard: **Settings → Access** (who may sign
+in: GitHub users and an organization, the ingest token, dry run, the GitHub
+App), **Settings → GitHub** (installations and repositories), **Settings →
+Fixer**, **Settings → AI**. **Setup** in the sidebar lists what is left.
+
 ### Signing in
 
-`DASHBOARD_AUTH=github` (the default) uses "Sign in with GitHub" through the
-GitHub App's OAuth credentials. Only users in `ALLOWED_USERS` or active members
-of `ALLOWED_ORG` get in; one of the two is required, so Sentinel fails closed.
+Sign-in is always with GitHub. Only the users and organization members
+allowed under Settings → Access (plus `ALLOWED_USERS` / `ALLOWED_ORG` from
+the environment, if set) get in; an empty list lets nobody in. Saving a list
+without yourself on it is refused, so you cannot lock yourself out.
 Sessions are HttpOnly cookies (7 days). State-changing API calls require an
 `X-Sentinel-Request` header, which cross-site pages cannot send.
-`DASHBOARD_AUTH=none` disables sign-in and is for local use only.
+`DASHBOARD_AUTH=none` disables sign-in for local development and only works
+when the dashboard listens on localhost.
 
-### GitHub App setup
+### Repositories
 
-1. Create a GitHub App (Settings → Developer settings → GitHub Apps → New
-   GitHub App) on your user or organization.
-2. **Callback URL**: `$PUBLIC_URL/auth/callback`. **Setup URL**:
-   `$PUBLIC_URL/github/setup` with "Redirect on update" ticked. Webhook: not
-   needed (untick "Active").
-3. Permissions. Repository: **Issues: Read and write**, **Metadata: Read-only**
-   (and **Contents** and **Pull requests: Read and write** for the fixer
-   container, see *Automated fixes*).
-   Organization: **Members: Read-only** (only needed for `ALLOWED_ORG`).
-4. Generate a private key and a client secret, then start Sentinel with
-   `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_FILE`, `GITHUB_APP_CLIENT_ID`,
-   `GITHUB_APP_CLIENT_SECRET` and `PUBLIC_URL`.
-5. In the dashboard: **Settings → GitHub → Install on GitHub**, choose repositories,
-   come back, and switch on the repositories Sentinel may file issues in.
-   Then set a default repository and/or a repository per service.
+In the dashboard: **Settings → GitHub → Install on GitHub**, choose
+repositories, come back, and switch on the repositories Sentinel may file
+issues in. Then set a default repository and/or a repository per service.
+
+An existing GitHub App still works from the environment (`GITHUB_APP_ID`,
+`GITHUB_APP_PRIVATE_KEY_FILE`, `GITHUB_APP_CLIENT_ID`,
+`GITHUB_APP_CLIENT_SECRET`); it wins over the one created in the dashboard.
 
 Issues are routed: service repository → dashboard default → `GITHUB_REPO`.
 With the app, the repository must be visible to an installation *and*
@@ -314,7 +383,7 @@ ANTHROPIC_API_KEY=sk-ant-... ./bin/sentinel
 Try it locally without GitHub, sign-in or an AI key, with demo traffic:
 
 ```bash
-DRY_RUN=true DASHBOARD_AUTH=none AI_PROVIDER=none ./bin/sentinel
+SENTINEL_HTTP_ADDR=127.0.0.1:8080 DRY_RUN=true DASHBOARD_AUTH=none AI_PROVIDER=none ./bin/sentinel
 ```
 
 ```bash
@@ -342,6 +411,15 @@ that they became one group and one (logged) issue, that all 50 lines are
 searchable through the dashboard API, and that no secret is in the output or
 the stored logs. Use `PORT=14318 HTTP_PORT=18090` if the defaults are taken.
 
+## Setup guide
+
+**Setup** in the sidebar walks through everything above in order (dashboard
+sign-in, telemetry, GitHub, repositories, services, dry run, AI, fixes,
+Auto-fix, webhooks, uptime checks). Each step checks itself against what is
+configured, for example whether the GitHub App's installations grant the
+fixer Contents and Pull requests write, and says what is missing and where
+to set it. Optional steps can be skipped; the sidebar counts the rest.
+
 ## Deploying on a separate server
 
 Run Sentinel on its **own** machine, not on the servers it watches. Then an
@@ -364,20 +442,23 @@ taking the monitoring down with it.
 
 ```bash
 git clone <this repo> sentinel && cd sentinel/deploy
-cp .env.example .env            # set SENTINEL_DOMAIN, INGEST_TOKEN, GitHub App, ...
-openssl rand -hex 32            # a good INGEST_TOKEN
-cp ~/Downloads/your-app.private-key.pem secrets/github-app.pem
+echo "SENTINEL_DOMAIN=sentinel.example.com" > .env
 docker compose up -d --build
+docker compose logs sentinel | grep "setup code"
 ```
+
+Then open `https://SENTINEL_DOMAIN` and follow *First start* above. That is
+all the configuration Sentinel needs; everything else is in the dashboard.
 
 - Point DNS for `SENTINEL_DOMAIN` at the server and open ports **80** and
   **443** (Caddy gets a Let's Encrypt certificate automatically). Ports 4318
   and 8080 are not published; everything goes through Caddy.
 - Caddy routes `/v1/*` to the OTLP receiver and everything else to the
   dashboard, so collectors and browsers use the same `https://SENTINEL_DOMAIN`.
-- `INGEST_TOKEN` is required by the Compose file: collectors must send
-  `Authorization: Bearer <token>`. Several comma-separated tokens are accepted,
-  so you can rotate without downtime.
+- Collectors must send `Authorization: Bearer <token>`. Sentinel generates
+  the token; copy it from Settings → Access (where it can also be replaced).
+  `INGEST_TOKEN` in `.env` overrides it and accepts several comma-separated
+  tokens, for rotating without downtime.
 - Data lives in the `sentinel-data` volume (`/data/sentinel.db`). Back it up
   with e.g. `docker compose exec` + `sqlite3 .backup`, or snapshot the volume.
 - Upgrade: `git pull && docker compose up -d --build`. The schema migrates
@@ -405,7 +486,7 @@ with:
 
 ```bash
 SENTINEL_ENDPOINT=https://sentinel.example.com
-SENTINEL_INGEST_TOKEN=<the INGEST_TOKEN>
+SENTINEL_INGEST_TOKEN=<the ingest token from Settings → Access>
 HOST_SERVICE_NAME=host-app-1
 ```
 
@@ -450,20 +531,21 @@ All configuration is via environment variables. Durations accept Go syntax
 |---|---|---|
 | `SENTINEL_OTLP_ADDR` | `:4318` | OTLP/HTTP listen address |
 | `SENTINEL_HTTP_ADDR` | `:8080` | Dashboard + API listen address |
-| `INGEST_TOKEN` | – | Comma-separated bearer tokens required on `/v1/*` (set it whenever the OTLP port is reachable from other machines) |
+| `INGEST_TOKEN` | generated | Comma-separated bearer tokens required on `/v1/*`; without it Sentinel generates one (Settings → Access) |
 | `PUBLIC_URL` | `http://localhost:8080` | External dashboard URL (OAuth and setup callbacks) |
 | `SENTINEL_DB` | `sentinel.db` | SQLite database path |
-| `DASHBOARD_AUTH` | `github` | `github` (sign in with GitHub) or `none` (local only) |
-| `ALLOWED_USERS` | – | Comma-separated GitHub logins allowed to sign in |
-| `ALLOWED_ORG` | – | GitHub organization whose members may sign in |
+| `DASHBOARD_AUTH` | `github` | `github`, or `none` for local development (only with a localhost `SENTINEL_HTTP_ADDR`) |
+| `ALLOWED_USERS` | – | GitHub logins allowed to sign in, besides Settings → Access |
+| `ALLOWED_ORG` | – | GitHub organization whose members may sign in, besides Settings → Access |
 | `LOG_RETENTION` | `168h` | How long log lines are kept |
 | `METRIC_RETENTION` | `168h` | How long metric points (and request statistics, uptime results) are kept |
 | `TRACE_RETENTION` | `72h` | How long stored spans are kept |
 | `TRACE_SAMPLE_RATE` | `1` | Share of traces stored (0–1, decided per trace id); spans with errors are always stored, request statistics count every span |
 | `PERF_SLOW_P95` | `2s` | p95 of an operation that files a slow-endpoint issue; `0` disables |
-| `AUTOFIX_MODE` | `actions` | Where Claude Code fixes issues: `actions` (a workflow in each repository) or `fixer` (the fixer container) |
+| `AUTOFIX_MODE` | `actions` | Where Claude Code fixes issues until one is picked in the dashboard: `actions` (a workflow in each repository) or `fixer` (the fixer container) |
 | `AUTOFIX_LABEL` | `sentinel-autofix` | Label that starts the fix workflow in the repository (`actions` mode) |
-| `FIXER_TOKEN` | – | Shared secret of Sentinel and the fixer container; enables it for fixes (`AUTOFIX_MODE=fixer`) and investigations (AI provider `claude-code`) |
+| `FIXER_TOKEN` | generated | Shared secret of Sentinel and the fixer container. Without it Sentinel generates one and writes it to `FIXER_TOKEN_FILE` for the fixer |
+| `FIXER_TOKEN_FILE` | – | Where Sentinel writes the fixer's token (`/fixer-auth/token` in the Compose files, a volume both containers mount) |
 | `PERF_N_PLUS_ONE` | `10` | Identical database calls under one span that file an N+1 issue; `0` disables |
 | `MIN_SEVERITY` | `17` | Lowest log `severity_number` treated as an error |
 | `TICK_INTERVAL` | `10s` | Reporter loop interval |
@@ -501,6 +583,119 @@ All configuration is via environment variables. Durations accept Go syntax
 The model only writes the title, summary, likely cause and next steps. Its
 prompt marks all telemetry as untrusted data, and its output is redacted and
 has `@mentions` neutralized before it is posted.
+
+## Structured log lines (JSON and logfmt)
+
+Log lines whose body is a JSON object or **logfmt** (`key=value` pairs with
+quoted values, as Grafana Alloy, Loki, Prometheus, Go's slog text handler
+and logrus write) are read as fields:
+
+- When the record has no severity of its own, the line's `level=` (or
+  `"level"`, `severity`, `lvl`) sets it, so `level=error` lines count as
+  errors.
+- The issue for such an error is titled by its `msg`/`message`; the other
+  fields (`error`, ids, counts, timestamps) become its attributes, so lines
+  that differ only in those group together. The stored line is unchanged.
+- On the Logs page they show their message field (chosen per service, or
+  the usual names), and the log drawer lists every field.
+
+## Sentry SDKs (drop-in)
+
+Apps that already use a Sentry SDK keep it: create a DSN for the service
+under **Settings → Integrations** and put it where the Sentry DSN was
+(`https://<key>@SENTINEL_DOMAIN/sentry/<id>`). Nothing else changes. The SDK
+posts to `/sentry/api/<id>/envelope/` (or the older `/store/`), which
+Sentinel serves on the dashboard port (so it works through Caddy unchanged)
+and on the OTLP port.
+
+- **Errors** (exceptions, and messages at level error/fatal) become issues
+  and log lines: exception type and value, the stack trace (in-app frames,
+  newest first), tags, user, request, release, environment, trace id and a
+  custom `fingerprint` are kept. Info and warning messages become log lines.
+- **Transactions** become traces (the transaction and its spans), so
+  performance, slow-endpoint and N+1 detection work too.
+- **Sentry logs** (`enable_logs`) become log lines with their attributes.
+- Sessions, client reports, replays, profiles, check-ins and attachments are
+  accepted and dropped. Bodies may be gzip or deflate compressed; the Python
+  SDK uses brotli when the `brotli` package is installed, so set
+  `transport_compression_algo` to `gzip` there.
+
+Each DSN belongs to one service; an optional default environment is used
+for events without one. Replacing a DSN's key or deleting it refuses apps
+with the old one. Tested with the official Python SDK (2.19 and 2.75).
+
+## Frontend and app logs
+
+The same per-service key a Sentry DSN carries (Settings → Integrations →
+App and browser keys) also works for:
+
+- **Grafana Faro** (`@grafana/faro-web-sdk`): set
+  `url: "https://SENTINEL_DOMAIN/ingest/<id>/<key>/faro"`. Console logs,
+  uncaught errors and rejections become log lines and issues (with browser,
+  page path, session and user); Web Vitals become metrics per page path;
+  page and session events become debug log lines.
+- **Datadog Browser Logs** (`@datadog/browser-logs`): keep the SDK and set
+  `proxy: "https://SENTINEL_DOMAIN/ingest/<id>/<key>/datadog"`
+  (`clientToken` is ignored). Logs, console and network errors arrive with
+  their view, user and error details.
+- **Plain JSON** at `/ingest/<id>/<key>/logs`: one object, an array, or one
+  object per line, from `fetch`, `navigator.sendBeacon`, logger transports,
+  Vector or Fluent Bit. The usual field names are understood (`message` or
+  `msg`, `level`/`severity`/`status`, `timestamp`/`time`/`ts` as RFC 3339 or
+  epoch); an `error` object (`name`/`kind`, `message`, `stack`) or a `stack`
+  makes it an issue; everything else becomes attributes.
+
+Keys are public (they ship in frontend code) and can only send telemetry.
+Set **allowed origins** on a key (`https://shop.example.com`,
+`https://*.example.com`) so browsers on other sites are refused; requests
+without an `Origin` (servers) are still accepted. Tested with Faro 2.13 and
+Datadog Browser Logs 7.17 in Chrome.
+
+## Following a request through every service
+
+A trace is every span with the same trace id, from any service, whichever
+way it arrived (OTLP, a Sentry DSN, Faro). The trace view shows them as one
+waterfall with the log lines that carry that trace id, and the Traces page
+filters by any span attribute (`session.id=…`, `user.id=…`, `order.id=…`),
+which finds every trace of a browser session or user; the log drawer and
+span details link there ("traces"). Sampling is decided from the trace id,
+so every service keeps or drops the same traces.
+
+Services hand the trace on in HTTP headers. What each SDK sends and reads
+(checked in their source):
+
+| SDK | Sends | Continues from |
+|---|---|---|
+| OpenTelemetry (every language) | W3C `traceparent` | W3C `traceparent` |
+| Faro (`@grafana/faro-web-tracing`) | `traceparent` (cross-origin only to `propagateTraceHeaderCorsUrls`) | (starts traces in the browser) |
+| Sentry JavaScript | `sentry-trace` + `baggage`; also `traceparent` with `propagateTraceparent: true` | `sentry-trace` |
+| Sentry Python | `sentry-trace` + `baggage` | `sentry-trace` |
+
+So a chain links up when each hop speaks the next one's header:
+OpenTelemetry to OpenTelemetry always; Sentry to Sentry always; a browser
+with Faro tracing, or Sentry JS with `propagateTraceparent: true`, into
+OpenTelemetry backends. A Sentry Python backend only joins a trace that
+arrives as `sentry-trace`. Mixed chains cannot be stitched afterwards:
+two trace ids stay two traces.
+
+Checklist:
+
+- Browser to your API: list the API in `propagateTraceHeaderCorsUrls`
+  (Faro) or `tracePropagationTargets` (Sentry), and let the API's CORS allow
+  the `traceparent`, `tracestate`, `sentry-trace` and `baggage` headers.
+- Backends: use the OpenTelemetry instrumentation for your HTTP server and
+  client (or the Sentry SDK's), which read and forward the headers. Reading
+  them by hand, match header names case-insensitively.
+- Logs: OpenTelemetry log bridges (Python's `LoggingHandler`, Go's
+  `otelslog`, …) stamp each log line with the active span, so the trace view
+  shows them. JSON logs can send `trace_id`/`span_id` or a `traceparent`.
+- Sentry SDKs in OpenTelemetry mode (Python's `OTLPIntegration`) export
+  their OTLP traces to the DSN's `…/integration/otlp/v1/traces`, which
+  Sentinel serves too.
+
+Tested end to end: a browser with Faro tracing calling two services using
+the OpenTelemetry Python SDK showed up as one trace of five spans across
+the three services, with the log lines of both backends.
 
 ## Pointing an OpenTelemetry Collector at Sentinel
 

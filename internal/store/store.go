@@ -72,6 +72,9 @@ type Group struct {
 	FixStartedAt   time.Time `json:"fix_started_at,omitzero"`
 	// FixSummary is the fixer's explanation or error.
 	FixSummary string `json:"fix_summary,omitempty"`
+	// FixPRs are all pull requests of a fix across repositories (empty or
+	// one for a fix in the issue's repository only).
+	FixPRs []FixPR `json:"fix_prs,omitempty"`
 	// Triage from the investigation: fix | ignore | investigate.
 	TriageVerdict  string `json:"triage_verdict,omitempty"`
 	TriageSeverity string `json:"triage_severity,omitempty"`
@@ -299,7 +302,7 @@ const groupCols = `SELECT id, fingerprint, service, env, kind, title, first_seen
 	(SELECT COUNT(*) FROM group_tags t WHERE t.group_id = groups.id AND t.key = 'user'),
 	(SELECT COUNT(*) FROM group_aliases a WHERE a.group_id = groups.id),
 	fix_state, fix_requested_at, fix_attempts, fix_pr_number, fix_pr_url, fix_checked_at, fix_started_at, fix_summary,
-	triage_verdict, triage_severity, triage_reason FROM groups`
+	triage_verdict, triage_severity, triage_reason, fix_prs FROM groups`
 
 type scanner interface{ Scan(...any) error }
 
@@ -307,13 +310,17 @@ func scanGroup(r scanner) (Group, error) {
 	var g Group
 	var kind string
 	var first, last, rep, chk, created, snooze, fixReq, fixChk, fixStart int64
+	var fixPRs string
 	err := r.Scan(&g.ID, &g.Fingerprint, &g.Service, &g.Env, &kind, &g.Title, &first, &last, &g.Count,
 		&g.CountAtLastReport, &g.Status, &g.IssueNumber, &g.IssueURL, &rep, &chk, &created, &g.Repo, &g.BlockReason,
 		&g.FirstRelease, &g.LastRelease, &g.RegressedRelease, &snooze, &g.SnoozeCount, &g.SnoozeRelease, &g.Users, &g.Merged,
 		&g.FixState, &fixReq, &g.FixAttempts, &g.FixPRNumber, &g.FixPRURL, &fixChk, &fixStart, &g.FixSummary,
-		&g.TriageVerdict, &g.TriageSeverity, &g.TriageReason)
+		&g.TriageVerdict, &g.TriageSeverity, &g.TriageReason, &fixPRs)
 	if err != nil {
 		return g, err
+	}
+	if fixPRs != "" && fixPRs != "[]" {
+		json.Unmarshal([]byte(fixPRs), &g.FixPRs)
 	}
 	g.SnoozeUntil = fromMs(snooze)
 	g.FixRequestedAt, g.FixCheckedAt, g.FixStartedAt = fromMs(fixReq), fromMs(fixChk), fromMs(fixStart)

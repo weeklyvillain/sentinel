@@ -59,8 +59,10 @@ type Receiver struct {
 	// Tokens, if non-empty, are the accepted bearer tokens
 	// ("Authorization: Bearer <token>"). Empty disables authentication.
 	Tokens []string
-	Log    *slog.Logger
-	Now    func() time.Time
+	// TokenSource, when set, replaces Tokens (a token can change at runtime).
+	TokenSource func() []string
+	Log         *slog.Logger
+	Now         func() time.Time
 	// SpanSampleRate is the share of traces stored for the trace view (0-1).
 	// Error spans are always stored; request statistics count every span.
 	SpanSampleRate float64
@@ -87,7 +89,11 @@ var errUnsupported = errors.New("unsupported content type")
 
 // authorized checks the bearer token in constant time.
 func (r *Receiver) authorized(req *http.Request) bool {
-	if len(r.Tokens) == 0 {
+	tokens := r.Tokens
+	if r.TokenSource != nil {
+		tokens = r.TokenSource()
+	}
+	if len(tokens) == 0 {
 		return true
 	}
 	h := req.Header.Get("Authorization")
@@ -99,7 +105,7 @@ func (r *Receiver) authorized(req *http.Request) bool {
 		return false
 	}
 	match := 0
-	for _, t := range r.Tokens {
+	for _, t := range tokens {
 		match |= subtle.ConstantTimeCompare([]byte(tok), []byte(t))
 	}
 	return match == 1
@@ -346,7 +352,15 @@ func (r *Receiver) logs(ctx context.Context, body []byte, isJSON bool) error {
 				if sevNum == 0 {
 					sevNum = severityFromText(lr.GetSeverityText())
 				}
-				isErr := int32(lr.GetSeverityNumber()) >= minSev || isErrorText(lr.GetSeverityText()) || hasExc
+				sevText, body := severity(lr), anyString(lr.GetBody())
+				// No severity on the record: a logfmt or JSON line may say
+				// its level itself ("level=error").
+				if sevNum == 0 && sevText == "" {
+					if lvl := BodyLevel(body); lvl != "" {
+						sevNum, sevText = severityFromText(lvl), strings.ToUpper(lvl)
+					}
+				}
+				isErr := sevNum >= minSev || isErrorText(sevText) || hasExc
 				ts := r.pickTime(lr.GetTimeUnixNano(), lr.GetObservedTimeUnixNano())
 				rec := Record{Log: store.LogRecord{
 					Time:         ts,
@@ -354,8 +368,8 @@ func (r *Receiver) logs(ctx context.Context, body []byte, isJSON bool) error {
 					Env:          ri.env,
 					Kind:         "log",
 					Severity:     sevNum,
-					SeverityText: severity(lr),
-					Body:         anyString(lr.GetBody()),
+					SeverityText: sevText,
+					Body:         body,
 					TraceID:      hexID(lr.GetTraceId()),
 					SpanID:       hexID(lr.GetSpanId()),
 					Attrs:        attrs,
@@ -370,7 +384,7 @@ func (r *Receiver) logs(ctx context.Context, body []byte, isJSON bool) error {
 						Environment: ri.env,
 						Release:     ri.version,
 						Time:        ts,
-						Severity:    severity(lr),
+						Severity:    sevText,
 						Message:     rec.Log.Body,
 						ExcType:     attrs["exception.type"],
 						ExcMessage:  attrs["exception.message"],
@@ -378,6 +392,22 @@ func (r *Receiver) logs(ctx context.Context, body []byte, isJSON bool) error {
 						TraceID:     rec.Log.TraceID,
 						SpanID:      rec.Log.SpanID,
 						Attributes:  mergeAttrs(ri.attrs, attrs),
+					}
+					// A JSON or logfmt line: the issue is about its message;
+					// the other fields (ts, error, ids…) become attributes,
+					// so they do not make every line a group of its own.
+					if f := StructuredFields(body); f != nil {
+						for _, k := range []string{"msg", "message", "@message", "event"} {
+							if f[k] != "" {
+								rec.Error.Message = f[k]
+								break
+							}
+						}
+						for k, v := range f {
+							if _, taken := rec.Error.Attributes[k]; !taken && len(rec.Error.Attributes) < 200 {
+								rec.Error.Attributes[k] = v
+							}
+						}
 					}
 				}
 				batch = append(batch, rec)
@@ -426,12 +456,21 @@ func (r *Receiver) traces(ctx context.Context, body []byte, isJSON bool) error {
 	if err := unmarshal(body, isJSON, &req); err != nil {
 		return err
 	}
+	return r.tracesData(ctx, &req, nil)
+}
+
+// tracesData stores spans and files error spans. override, when set,
+// adjusts each resource (client keys put spans under their own service).
+func (r *Receiver) tracesData(ctx context.Context, req *tracepb.TracesData, override func(*resInfo)) error {
 	seen := map[string]bool{}
 	var batch []Record
 	spanSink, keepSpans := r.Sink.(SpanSink)
 	var spans []store.Span
 	for _, rs := range req.GetResourceSpans() {
 		ri := resourceInfo(rs.GetResource())
+		if override != nil {
+			override(&ri)
+		}
 		r.heartbeat(ctx, seen, ri)
 		for _, ss := range rs.GetScopeSpans() {
 			for _, sp := range ss.GetSpans() {

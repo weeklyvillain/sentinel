@@ -17,20 +17,23 @@ const analyzeTools = "Read,Glob,Grep,Bash(git log:*),Bash(git show:*),Bash(git b
 
 // analyze investigates an error and writes the issue text and a verdict on
 // whether it is worth fixing. It never changes the repository.
-func (f *fixer) analyze(ctx context.Context, job *fixjob.Job, log *slog.Logger) (fixjob.Result, error) {
+func (f *fixer) analyze(ctx context.Context, job *fixjob.Job, log *slog.Logger, rl *runLog) (fixjob.Result, error) {
 	dir := filepath.Join(f.cfg.workdir, fmt.Sprintf("analysis-%d", job.AnalysisID))
 	os.RemoveAll(dir)
 	defer os.RemoveAll(dir)
 	withCode := job.CloneURL != ""
 	if withCode {
 		g := &gitRunner{token: job.Token}
+		rl.step("Cloning %s (read-only) to investigate", job.Repo)
 		if _, err := g.run(ctx, "", "clone", "--depth", "50", "--no-tags", job.CloneURL, dir); err != nil {
 			return fixjob.Result{}, fmt.Errorf("clone: %w", err)
 		}
 	} else if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fixjob.Result{}, err
+	} else {
+		rl.step("No repository for this service: investigating from the report alone")
 	}
-	out, err := f.runClaude(ctx, dir, analyzePrompt(job, withCode), analyzeTools, f.cfg.analyzeTurns, f.cfg.analyzeModel)
+	out, err := f.runClaude(ctx, job, rl, dir, analyzePrompt(job, withCode), analyzeTools, f.cfg.analyzeTurns, f.cfg.analyzeModel)
 	if err != nil {
 		return fixjob.Result{}, err
 	}
@@ -39,6 +42,7 @@ func (f *fixer) analyze(ctx context.Context, job *fixjob.Job, log *slog.Logger) 
 		return fixjob.Result{}, err
 	}
 	log.Info("investigated", "verdict", a.Verdict, "severity", a.Severity, "title", a.Title)
+	rl.step("Verdict: %s (%s, confidence %.0f%%): %s", a.Verdict, a.Severity, a.Confidence*100, a.Title)
 	return fixjob.Result{Status: fixjob.StatusDone, Analysis: &a}, nil
 }
 

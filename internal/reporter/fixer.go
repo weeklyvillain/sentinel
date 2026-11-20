@@ -34,7 +34,19 @@ const fixRunTimeout = time.Hour
 // ErrStaleJob is returned for a result of a job that is no longer running.
 var ErrStaleJob = errors.New("this fix job is no longer running")
 
-func (r *Reporter) fixerMode() bool { return r.Cfg.FixMode == FixModeFixer }
+// FixMode is how fixes run now: Cfg.FixMode (AUTOFIX_MODE) until the
+// dashboard sets one.
+func (r *Reporter) FixMode() string {
+	if m := r.fixMode.Load(); m != nil {
+		return *m
+	}
+	return r.Cfg.FixMode
+}
+
+// SetFixMode switches between FixModeActions and FixModeFixer.
+func (r *Reporter) SetFixMode(m string) { r.fixMode.Store(&m) }
+
+func (r *Reporter) fixerMode() bool { return r.FixMode() == FixModeFixer }
 
 // queueFix puts a group in the fixer's queue.
 func (r *Reporter) queueFix(ctx context.Context, gh github.API, g store.Group, why string) error {
@@ -95,11 +107,89 @@ func (r *Reporter) ClaimFixJob(ctx context.Context) (*fixjob.Job, error) {
 			Title: g.Title, Brief: brief,
 			Branch: fmt.Sprintf("sentinel-fix-%d-%d", g.IssueNumber, g.FixAttempts), CloneURL: access.CloneURL, APIURL: access.APIURL,
 			Token: access.Token, DryRun: access.DryRun || dryRun(g),
+			Related: r.relatedRepos(ctx, g, samples, pa),
 		}
-		r.Log.Info("fix job claimed", "group", g.ID, "issue", g.IssueNumber, "repo", g.Repo, "attempt", g.FixAttempts)
+		r.Log.Info("fix job claimed", "group", g.ID, "issue", g.IssueNumber, "repo", g.Repo, "attempt", g.FixAttempts, "related", len(job.Related))
 		return job, nil
 	}
 	return nil, nil
+}
+
+// maxRelatedRepos bounds how many other repositories one fix may touch.
+const maxRelatedRepos = 3
+
+// relatedRepos lists the repositories of the other services in the error's
+// traces (a frontend sending what the backend rejects, a caller and the
+// service it calls), with push access to each: a fix may need to change
+// more than one of them.
+func (r *Reporter) relatedRepos(ctx context.Context, g store.Group, samples []store.Sample, pa PushAccessor) []fixjob.RelatedRepo {
+	traces := map[string]bool{}
+	for _, s := range samples {
+		if id := s.Event.TraceID; id != "" && len(traces) < 10 {
+			traces[id] = true
+		}
+	}
+	if len(traces) == 0 {
+		return nil
+	}
+	services := map[string]bool{}
+	for id := range traces {
+		spans, err := r.Store.GetTrace(ctx, id)
+		if err != nil {
+			continue
+		}
+		for _, sp := range spans {
+			if sp.Service != g.Service {
+				services[sp.Service] = true
+			}
+		}
+	}
+	if len(services) == 0 {
+		return nil
+	}
+	all, err := r.Store.ListServices(ctx)
+	if err != nil {
+		return nil
+	}
+	repoOf := map[string]string{}
+	for _, s := range all {
+		if s.Repo != "" {
+			repoOf[s.Name] = s.Repo
+		}
+	}
+	names := make([]string, 0, len(services))
+	for s := range services {
+		names = append(names, s)
+	}
+	sort.Strings(names)
+	seen := map[string]bool{strings.ToLower(g.Repo): true}
+	var out []fixjob.RelatedRepo
+	for _, svc := range names {
+		repo := repoOf[svc]
+		if repo == "" || seen[strings.ToLower(repo)] {
+			continue
+		}
+		seen[strings.ToLower(repo)] = true
+		access, err := pa.PushAccess(ctx, repo, true)
+		if err != nil {
+			r.Log.Info("fix job: related repository left out", "repo", repo, "service", svc, "err", err)
+			continue
+		}
+		out = append(out, fixjob.RelatedRepo{Repo: repo, Service: svc, CloneURL: access.CloneURL, Token: access.Token})
+		if len(out) == maxRelatedRepos {
+			break
+		}
+	}
+	return out
+}
+
+// prLinks lists pull requests as markdown links.
+func prLinks(prs []fixjob.PullRequest) string {
+	var b strings.Builder
+	for _, p := range prs {
+		fmt.Fprintf(&b, "\n- %s#%d: %s", p.Repo, p.Number, p.URL)
+	}
+	return b.String()
 }
 
 // FixJobResult records what the fixer did and tells the issue.
@@ -123,6 +213,9 @@ func (r *Reporter) FixJobResult(ctx context.Context, id int64, res fixjob.Result
 		}
 		state = store.FixPROpen
 		comment = fmt.Sprintf("🛠️ Sentinel's fixer opened %s with a proposed fix.", res.PRURL)
+		if len(res.PRs) > 1 {
+			comment = fmt.Sprintf("🛠️ Sentinel's fixer proposes a fix across %d repositories. Review and merge them together:%s", len(res.PRs), prLinks(res.PRs))
+		}
 		r.notify(notify.Event{Type: notify.FixOpened, Service: g.Service, Group: groupInfo(g), Issue: info,
 			Message: fmt.Sprintf("Fix proposed for %s in %s: %s", g.Title, g.Service, res.PRURL)})
 	case fixjob.StatusNoFix:
@@ -142,6 +235,15 @@ func (r *Reporter) FixJobResult(ctx context.Context, id int64, res fixjob.Result
 		return g, fmt.Errorf("unknown status %q", res.Status)
 	}
 	if err := r.Store.SetFixOutcome(ctx, g.ID, state, res.PRNumber, res.PRURL, res.Summary, now); err != nil {
+		return g, err
+	}
+	var prs []store.FixPR
+	if res.Status == fixjob.StatusPR && len(res.PRs) > 1 {
+		for _, p := range res.PRs {
+			prs = append(prs, store.FixPR{Repo: p.Repo, Number: p.Number, URL: p.URL, State: "open"})
+		}
+	}
+	if err := r.Store.SetFixPRs(ctx, g.ID, prs); err != nil {
 		return g, err
 	}
 	if comment != "" && !dryRun(g) {

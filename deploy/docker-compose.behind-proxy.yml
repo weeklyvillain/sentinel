@@ -22,11 +22,13 @@ services:
     environment:
       SENTINEL_DB: /data/sentinel.db
       PUBLIC_URL: https://${SENTINEL_DOMAIN:?set SENTINEL_DOMAIN in .env}
-      INGEST_TOKEN: ${INGEST_TOKEN:?set INGEST_TOKEN in .env}
       GITHUB_APP_PRIVATE_KEY_FILE: /secrets/github-app.pem
+      # Sentinel writes the fixer's token here (or FIXER_TOKEN from .env).
+      FIXER_TOKEN_FILE: /fixer-auth/token
     volumes:
       - sentinel-data:/data
       - ./secrets:/secrets:ro
+      - fixer-auth:/fixer-auth
     ports:
       - "127.0.0.1:4318:4318"
       - "127.0.0.1:18080:8080"
@@ -34,5 +36,32 @@ services:
       driver: json-file
       options: { max-size: "20m", max-file: "5" }
 
+  fixer:
+    build:
+      context: ..
+      dockerfile: Dockerfile.fixer
+    image: sentinel-fixer:latest
+    restart: unless-stopped
+    depends_on: [sentinel]
+    environment:
+      SENTINEL_URL: http://sentinel:8080
+      FIXER_TOKEN_FILE: /fixer-auth/token
+      # Optional defaults: a sign-in or model set in the dashboard wins.
+      FIXER_TOKEN: ${FIXER_TOKEN:-}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      ANTHROPIC_API_KEY: ${FIXER_ANTHROPIC_API_KEY:-}
+      FIXER_EXTRA_TOOLS: ${FIXER_EXTRA_TOOLS:-}
+      FIXER_MODEL: ${FIXER_MODEL:-}
+    volumes:
+      - fixer-work:/work
+      - fixer-auth:/fixer-auth:ro
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE, SETUID, SETGID]
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
 volumes:
   sentinel-data:
+  fixer-auth:
+  fixer-work:

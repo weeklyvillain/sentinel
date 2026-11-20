@@ -1,8 +1,11 @@
 // Package fixjob is the contract between Sentinel and sentinel-fixer, the
 // companion container that runs Claude Code to fix issues and open pull
 // requests. Sentinel queues jobs; the fixer claims one at a time over HTTP
-// (bearer FIXER_TOKEN), works on it and reports the result.
+// (bearer FIXER_TOKEN, which Sentinel generates and shares through a file
+// when it is not set), works on it and reports the result.
 package fixjob
+
+import "time"
 
 // Job kinds.
 const (
@@ -35,6 +38,125 @@ type Job struct {
 	Token string `json:"token"`
 	// DryRun: do everything but push and open the pull request.
 	DryRun bool `json:"dry_run,omitempty"`
+	// Claude is the Claude Code sign-in set in the dashboard. It replaces
+	// the fixer's own (CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY) when set.
+	Claude *ClaudeAuth `json:"claude,omitempty"`
+	// Model is the Claude model set in the dashboard for this kind of job;
+	// empty uses the fixer's FIXER_MODEL / FIXER_ANALYZE_MODEL.
+	Model string `json:"model,omitempty"`
+	// RunID is Sentinel's record of this attempt: the fixer sends its log
+	// to /fixer/runs/{RunID}/log and the result names it.
+	RunID int64 `json:"run_id,omitempty"`
+	// Commands are shell command prefixes Claude may run in a fix job
+	// besides reading and editing files, e.g. "go test" (set in the
+	// dashboard); the fixer allows each as Bash(<prefix>:*).
+	Commands []string `json:"commands,omitempty"`
+	// Effort is Claude Code's --effort (low … max); empty is its default.
+	Effort string `json:"effort,omitempty"`
+	// Permissions is what Claude may do in a fix job besides reading and
+	// editing files: PermCommands (default), PermAuto or PermAll.
+	Permissions string `json:"permissions,omitempty"`
+	// Related are other repositories the fix may need to change: those of
+	// the other services in the error's traces. Each gets its own pull
+	// request on Branch, and the pull requests link each other.
+	Related []RelatedRepo `json:"related,omitempty"`
+}
+
+// RelatedRepo is another repository a fix job may change.
+type RelatedRepo struct {
+	Repo     string `json:"repo"`    // owner/name
+	Service  string `json:"service"` // the service it belongs to
+	CloneURL string `json:"clone_url"`
+	// Token can push to and open pull requests in this one repository.
+	Token string `json:"token"`
+}
+
+// PullRequest is one pull request a fix opened.
+type PullRequest struct {
+	Repo     string `json:"repo"`
+	Number   int    `json:"number"`
+	URL      string `json:"url"`
+	Diffstat string `json:"diffstat,omitempty"`
+}
+
+// Fix job permission levels.
+const (
+	// PermCommands: only the listed Commands (and FIXER_EXTRA_TOOLS).
+	PermCommands = "commands"
+	// PermAuto: Claude Code's auto mode, which runs what the task needs
+	// and blocks risky actions with a safety check.
+	PermAuto = "auto"
+	// PermAll: everything, no checks (Claude Code's bypassPermissions).
+	PermAll = "all"
+)
+
+// Log line kinds: the fixer's own steps and Claude Code's.
+const (
+	LogStep       = "step"        // the fixer: cloning, pushing, …
+	LogError      = "error"       // the fixer: something failed
+	LogText       = "text"        // Claude: what it says
+	LogTool       = "tool"        // Claude: a tool call (name and input)
+	LogToolResult = "tool_result" // Claude: what the tool returned
+	LogToolError  = "tool_error"  // Claude: a tool call that failed
+)
+
+// LogLine is one step of a run.
+type LogLine struct {
+	At   time.Time `json:"at"`
+	Kind string    `json:"kind"`
+	Text string    `json:"text"`
+}
+
+// LogBatch is what the fixer posts to /fixer/runs/{id}/log.
+type LogBatch struct {
+	Lines []LogLine `json:"lines"`
+}
+
+// Usage is what Claude Code reported for a run (from its result message).
+// With a subscription CostUSD is what the run would have cost on the API.
+type Usage struct {
+	Model            string  `json:"model,omitempty"`
+	Turns            int     `json:"turns"`
+	DurationMS       int64   `json:"duration_ms"`
+	InputTokens      int64   `json:"input_tokens"`
+	OutputTokens     int64   `json:"output_tokens"`
+	CacheReadTokens  int64   `json:"cache_read_tokens"`
+	CacheWriteTokens int64   `json:"cache_write_tokens"`
+	CostUSD          float64 `json:"cost_usd"`
+}
+
+// Add sums two runs of Claude Code (a job can run it more than once).
+func (u *Usage) Add(o Usage) {
+	if o.Model != "" {
+		u.Model = o.Model
+	}
+	u.Turns += o.Turns
+	u.DurationMS += o.DurationMS
+	u.InputTokens += o.InputTokens
+	u.OutputTokens += o.OutputTokens
+	u.CacheReadTokens += o.CacheReadTokens
+	u.CacheWriteTokens += o.CacheWriteTokens
+	u.CostUSD += o.CostUSD
+}
+
+// Claude Code sign-in kinds.
+const (
+	AuthSubscription = "subscription" // an OAuth token from `claude setup-token`
+	AuthAPIKey       = "api_key"      // an Anthropic API key, billed per token
+)
+
+// ClaudeAuth is how Claude Code signs in for a job.
+type ClaudeAuth struct {
+	Kind  string `json:"kind"` // subscription | api_key
+	Token string `json:"token"`
+}
+
+// Env is the environment variable Claude Code reads the credential from.
+func (a ClaudeAuth) Env() string {
+	if a.Kind == AuthAPIKey {
+		return "ANTHROPIC_API_KEY=" + a.Token
+	}
+	return "CLAUDE_CODE_OAUTH_TOKEN=" + a.Token
 }
 
 // Result statuses.
@@ -73,12 +195,20 @@ type Result struct {
 	// Analysis answers an "analyze" job (with AnalysisID).
 	AnalysisID int64     `json:"analysis_id,omitempty"`
 	Analysis   *Analysis `json:"analysis,omitempty"`
+	// RunID echoes Job.RunID; Usage is what Claude Code used.
+	RunID int64  `json:"run_id,omitempty"`
+	Usage *Usage `json:"usage,omitempty"`
+	// PRs lists every pull request of a fix across repositories (the first
+	// is also PRNumber/PRURL).
+	PRs []PullRequest `json:"prs,omitempty"`
 }
 
 // Hello is what the fixer says about itself when it asks for work.
 type Hello struct {
 	Version string `json:"version"`
-	// Auth is how its Claude Code signs in: "subscription" (an OAuth token
-	// from `claude setup-token`) or "api_key". Never the credential itself.
+	// Auth is how its Claude Code signs in from its own environment:
+	// "subscription" (an OAuth token from `claude setup-token`), "api_key",
+	// or "" when it has none and needs the one set in the dashboard. Never
+	// the credential itself.
 	Auth string `json:"auth"`
 }

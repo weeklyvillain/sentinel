@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -87,6 +88,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"github_sign_in": s.githubAuthReady(),
 		"signed_in":      ok,
 		"github_app":     s.App != nil,
+		"setup":          s.setupPhase(),
 		"info":           s.info(),
 		"csrf_header":    CSRFHeader,
 	}
@@ -102,7 +104,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.githubAuthReady() {
-		http.Error(w, "GitHub sign-in is not configured: set GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY(_FILE), GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET", http.StatusServiceUnavailable)
+		http.Redirect(w, r, "/", http.StatusFound) // the setup page creates the GitHub App
 		return
 	}
 	state := randomToken()
@@ -111,56 +113,73 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, s.App.AuthorizeURL(state, s.callbackURL()), http.StatusFound)
 }
 
-func (s *Server) allowed(login string, orgMember func() (bool, error)) (bool, error) {
-	if len(s.Auth.AllowedUsers) == 0 && s.Auth.AllowedOrg == "" {
+// allowed checks ALLOWED_USERS/ALLOWED_ORG and the dashboard's list.
+func (s *Server) allowed(login string, orgMember func(org string) (bool, error)) (bool, error) {
+	users, orgs := s.allowList()
+	if len(users) == 0 && len(orgs) == 0 {
 		return false, nil // fail closed: an allow-list is required
 	}
-	for _, u := range s.Auth.AllowedUsers {
+	for _, u := range users {
 		if strings.EqualFold(u, login) {
 			return true, nil
 		}
 	}
-	if s.Auth.AllowedOrg != "" {
-		return orgMember()
+	var firstErr error
+	for _, org := range orgs {
+		ok, err := orgMember(org)
+		if ok {
+			return true, nil
+		}
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	return false, nil
+	return false, firstErr
+}
+
+// signInFailed sends the browser back to the sign-in page with the reason.
+func signInFailed(w http.ResponseWriter, r *http.Request, msg string) {
+	http.Redirect(w, r, "/?error="+url.QueryEscape(msg), http.StatusFound)
 }
 
 func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	if !s.githubAuthReady() {
-		http.Error(w, "GitHub sign-in is not configured", http.StatusServiceUnavailable)
+		signInFailed(w, r, "GitHub sign-in is not set up yet.")
 		return
 	}
 	c, err := r.Cookie(stateCookie)
 	state := r.URL.Query().Get("state")
 	if err != nil || state == "" || subtle.ConstantTimeCompare([]byte(c.Value), []byte(state)) != 1 {
-		http.Error(w, "invalid OAuth state; try signing in again", http.StatusBadRequest)
+		signInFailed(w, r, "The sign-in expired or came from another browser. Try again.")
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: stateCookie, Value: "", Path: "/auth", MaxAge: -1})
 	code := r.URL.Query().Get("code")
 	if code == "" {
-		http.Error(w, "missing code", http.StatusBadRequest)
+		signInFailed(w, r, "GitHub did not complete the sign-in. Try again.")
 		return
 	}
 	token, err := s.App.ExchangeCode(r.Context(), code, s.callbackURL())
 	if err != nil {
 		s.log().Warn("oauth exchange failed", "err", err)
-		http.Error(w, "GitHub sign-in failed", http.StatusBadGateway)
+		signInFailed(w, r, "GitHub sign-in failed. Try again.")
 		return
 	}
 	u, err := s.App.GetUser(r.Context(), token)
 	if err != nil {
-		http.Error(w, "could not read GitHub user", http.StatusBadGateway)
+		signInFailed(w, r, "Could not read your GitHub account. Try again.")
 		return
 	}
-	ok, err := s.allowed(u.Login, func() (bool, error) { return s.App.IsOrgMember(r.Context(), token, s.Auth.AllowedOrg) })
+	ok, err := s.allowed(u.Login, func(org string) (bool, error) { return s.App.IsOrgMember(r.Context(), token, org) })
 	if err != nil {
 		s.log().Warn("org membership check failed", "user", u.Login, "err", err)
 	}
+	if !ok && s.adminFromSetup(r, u.Login) {
+		ok = true
+	}
 	if !ok {
 		s.log().Warn("sign-in denied", "user", u.Login)
-		http.Error(w, "Your GitHub account ("+u.Login+") is not allowed to use this Sentinel.", http.StatusForbidden)
+		signInFailed(w, r, "Your GitHub account ("+u.Login+") is not allowed to use this Sentinel. Ask an admin to add you under Settings → Access.")
 		return
 	}
 	raw := randomToken()

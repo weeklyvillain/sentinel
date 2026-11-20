@@ -2,9 +2,10 @@
 // queues for it: it clones the repository, runs Claude Code headless on the
 // error, and opens a pull request that says "Fixes #N".
 //
-// It signs in to Claude with CLAUDE_CODE_OAUTH_TOKEN (your subscription; make
-// one with `claude setup-token`) or ANTHROPIC_API_KEY, and asks Sentinel for
-// work with FIXER_TOKEN. Sentinel hands out a token per job that can only push
+// It signs in to Claude with the sign-in set in Sentinel's dashboard, or with
+// its own CLAUDE_CODE_OAUTH_TOKEN (your subscription; make one with `claude
+// setup-token`) or ANTHROPIC_API_KEY. It asks Sentinel for work with
+// FIXER_TOKEN, or the token Sentinel writes to FIXER_TOKEN_FILE. Sentinel hands out a token per job that can only push
 // to and open pull requests in that one repository; Claude itself never sees
 // a GitHub token.
 package main
@@ -36,15 +37,18 @@ const version = "1"
 type config struct {
 	sentinel string
 	token    string
-	workdir  string
-	poll     time.Duration
-	claude   string
-	maxTurns int
-	timeout  time.Duration
-	tools    string
-	model    string
-	gitName  string
-	gitEmail string
+	// tokenFile is read for the token when FIXER_TOKEN is not set; Sentinel
+	// writes it on start.
+	tokenFile string
+	workdir   string
+	poll      time.Duration
+	claude    string
+	maxTurns  int
+	timeout   time.Duration
+	tools     string
+	model     string
+	gitName   string
+	gitEmail  string
 	// Investigations: usually fewer turns, and a cheaper model is fine.
 	analyzeTurns int
 	analyzeModel string
@@ -52,8 +56,27 @@ type config struct {
 	claudeEnv    []string
 }
 
-// Read-only git plus file editing; add test commands with FIXER_EXTRA_TOOLS,
-// e.g. "Bash(go test:*),Bash(npm test:*)".
+// agentEnvPassthrough are toolchain settings the agent's commands get from
+// the fixer's environment (Dockerfile.fixer sets some).
+var agentEnvPassthrough = []string{"CGO_ENABLED", "GOTOOLCHAIN", "GOPROXY", "GOFLAGS", "GONOSUMDB", "GOPRIVATE", "NODE_OPTIONS", "npm_config_cache"}
+
+// validEffort: what `claude --effort` takes.
+func validEffort(e string) bool {
+	switch e {
+	case "", "low", "medium", "high", "xhigh", "max":
+		return true
+	}
+	return false
+}
+
+// validCommand mirrors Sentinel's check: a prefix without shell syntax.
+func validCommand(c string) bool {
+	return c != "" && len(c) <= 100 && !strings.ContainsAny(c, ";&|`$<>()\\\"'*\n\r\t")
+}
+
+// Read-only git plus file editing. Commands Claude may run come from the
+// dashboard with each job; FIXER_EXTRA_TOOLS adds more, e.g.
+// "Bash(go test:*),Bash(npm test:*)".
 const defaultTools = "Read,Edit,Write,Glob,Grep,Bash(git diff:*),Bash(git status:*),Bash(git log:*),Bash(git show:*)"
 
 func env(k, def string) string {
@@ -65,13 +88,14 @@ func env(k, def string) string {
 
 func loadConfig() (config, error) {
 	c := config{
-		sentinel: strings.TrimRight(env("SENTINEL_URL", "http://sentinel:8080"), "/"),
-		token:    os.Getenv("FIXER_TOKEN"),
-		workdir:  env("FIXER_WORKDIR", filepath.Join(os.TempDir(), "sentinel-fixer")),
-		claude:   env("CLAUDE_BIN", "claude"),
-		model:    os.Getenv("FIXER_MODEL"),
-		gitName:  env("FIXER_GIT_NAME", "Sentinel fixer"),
-		gitEmail: env("FIXER_GIT_EMAIL", "sentinel-fixer@users.noreply.github.com"),
+		sentinel:  strings.TrimRight(env("SENTINEL_URL", "http://sentinel:8080"), "/"),
+		token:     os.Getenv("FIXER_TOKEN"),
+		tokenFile: os.Getenv("FIXER_TOKEN_FILE"),
+		workdir:   env("FIXER_WORKDIR", filepath.Join(os.TempDir(), "sentinel-fixer")),
+		claude:    env("CLAUDE_BIN", "claude"),
+		model:     os.Getenv("FIXER_MODEL"),
+		gitName:   env("FIXER_GIT_NAME", "Sentinel fixer"),
+		gitEmail:  env("FIXER_GIT_EMAIL", "sentinel-fixer@users.noreply.github.com"),
 	}
 	var err error
 	if c.poll, err = time.ParseDuration(env("FIXER_POLL", "30s")); err != nil {
@@ -91,11 +115,17 @@ func loadConfig() (config, error) {
 	if extra := os.Getenv("FIXER_EXTRA_TOOLS"); extra != "" {
 		c.tools += "," + extra
 	}
-	if c.token == "" {
-		return c, errors.New("FIXER_TOKEN is required (the same value as Sentinel's FIXER_TOKEN)")
+	if c.token == "" && c.tokenFile == "" {
+		return c, errors.New("set FIXER_TOKEN (the same value as Sentinel's) or FIXER_TOKEN_FILE (the file Sentinel writes it to)")
 	}
 	// Claude Code gets only what it needs: no Sentinel or GitHub secrets.
 	c.claudeEnv = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + env("FIXER_AGENT_HOME", env("HOME", c.workdir)), "DISABLE_AUTOUPDATER=1", "CI=true"}
+	// Toolchain settings for the commands it may run (go build, …).
+	for _, k := range agentEnvPassthrough {
+		if v, ok := os.LookupEnv(k); ok {
+			c.claudeEnv = append(c.claudeEnv, k+"="+v)
+		}
+	}
 	switch {
 	case os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") != "":
 		c.auth = "subscription"
@@ -103,9 +133,9 @@ func loadConfig() (config, error) {
 	case os.Getenv("ANTHROPIC_API_KEY") != "":
 		c.auth = "api_key"
 		c.claudeEnv = append(c.claudeEnv, "ANTHROPIC_API_KEY="+os.Getenv("ANTHROPIC_API_KEY"))
-	default:
-		return c, errors.New("set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`, uses your Claude subscription) or ANTHROPIC_API_KEY")
 	}
+	// No credential of its own: Sentinel sends the one set in the dashboard
+	// with each job, and holds jobs back until there is one.
 	return c, nil
 }
 
@@ -123,7 +153,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	f := &fixer{cfg: cfg, log: log, http: &http.Client{Timeout: 60 * time.Second}}
-	log.Info("sentinel-fixer started", "sentinel", cfg.sentinel, "auth", cfg.auth, "poll", cfg.poll)
+	auth := cfg.auth
+	if auth == "" {
+		auth = "from Sentinel's dashboard"
+	}
+	log.Info("sentinel-fixer started", "sentinel", cfg.sentinel, "auth", auth, "poll", cfg.poll)
 	f.run(ctx)
 }
 
@@ -153,10 +187,31 @@ func (f *fixer) run(ctx context.Context) {
 	}
 }
 
+// token is FIXER_TOKEN, or what Sentinel wrote to FIXER_TOKEN_FILE. The file
+// is read every time, so a token Sentinel replaces is picked up.
+func (f *fixer) token() (string, error) {
+	if f.cfg.token != "" {
+		return f.cfg.token, nil
+	}
+	b, err := os.ReadFile(f.cfg.tokenFile)
+	if err != nil {
+		return "", fmt.Errorf("reading the token Sentinel shares (is Sentinel running?): %w", err)
+	}
+	t := strings.TrimSpace(string(b))
+	if t == "" {
+		return "", fmt.Errorf("%s is empty", f.cfg.tokenFile)
+	}
+	return t, nil
+}
+
 func (f *fixer) claim(ctx context.Context) (*fixjob.Job, error) {
+	tok, err := f.token()
+	if err != nil {
+		return nil, err
+	}
 	body, _ := json.Marshal(fixjob.Hello{Version: version, Auth: f.cfg.auth})
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, f.cfg.sentinel+"/fixer/claim", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+f.cfg.token)
+	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := f.http.Do(req)
 	if err != nil {
@@ -178,9 +233,13 @@ func (f *fixer) claim(ctx context.Context) (*fixjob.Job, error) {
 }
 
 func (f *fixer) report(ctx context.Context, id int64, res fixjob.Result) error {
+	tok, err := f.token()
+	if err != nil {
+		return err
+	}
 	body, _ := json.Marshal(res)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/fixer/jobs/%d/result", f.cfg.sentinel, id), bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+f.cfg.token)
+	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := f.http.Do(req)
 	if err != nil {
@@ -197,33 +256,42 @@ func (f *fixer) report(ctx context.Context, id int64, res fixjob.Result) error {
 // work runs one job and never returns an error: failures become a result.
 func (f *fixer) work(ctx context.Context, job *fixjob.Job) fixjob.Result {
 	log := f.log.With("job", job.ID, "kind", job.Kind, "repo", job.Repo, "issue", job.IssueNumber, "attempt", job.Attempt)
+	rl := f.startRunLog(job)
 	var res fixjob.Result
 	var err error
 	if job.Kind == fixjob.KindAnalyze {
 		log.Info("investigating")
-		res, err = f.analyze(ctx, job, log)
+		res, err = f.analyze(ctx, job, log, rl)
 	} else {
 		log.Info("fixing")
-		res, err = f.fix(ctx, job, log)
+		res, err = f.fix(ctx, job, log, rl)
 	}
-	res.Attempt, res.AnalysisID = job.Attempt, job.AnalysisID
 	if err != nil {
 		msg := err.Error()
-		if job.Token != "" {
-			msg = strings.ReplaceAll(msg, job.Token, "[REDACTED]")
+		for _, s := range rl.secrets {
+			msg = strings.ReplaceAll(msg, s, "[REDACTED]")
 		}
 		log.Warn("job failed", "err", msg)
-		return fixjob.Result{Attempt: job.Attempt, AnalysisID: job.AnalysisID, Status: fixjob.StatusFailed, Error: msg}
+		rl.add(fixjob.LogError, msg)
+		res = fixjob.Result{Status: fixjob.StatusFailed, Error: msg}
+	} else {
+		log.Info("done", "status", res.Status, "pr", res.PRURL)
+		rl.step("Done: %s", res.Status)
 	}
-	log.Info("done", "status", res.Status, "pr", res.PRURL)
+	rl.close()
+	res.Attempt, res.AnalysisID, res.RunID, res.Usage = job.Attempt, job.AnalysisID, job.RunID, rl.result()
 	return res
 }
 
-func (f *fixer) fix(ctx context.Context, job *fixjob.Job, log *slog.Logger) (fixjob.Result, error) {
+func (f *fixer) fix(ctx context.Context, job *fixjob.Job, log *slog.Logger, rl *runLog) (fixjob.Result, error) {
+	if len(job.Related) > 0 {
+		return f.fixMulti(ctx, job, log, rl)
+	}
 	dir := filepath.Join(f.cfg.workdir, fmt.Sprintf("job-%d-%d", job.ID, job.Attempt))
 	os.RemoveAll(dir)
 	defer os.RemoveAll(dir)
 	g := &gitRunner{token: job.Token}
+	rl.step("Cloning %s to fix #%d (attempt %d)", job.Repo, job.IssueNumber, job.Attempt)
 	if _, err := g.run(ctx, "", "clone", "--depth", "50", "--no-tags", job.CloneURL, dir); err != nil {
 		return fixjob.Result{}, fmt.Errorf("clone: %w", err)
 	}
@@ -237,7 +305,7 @@ func (f *fixer) fix(ctx context.Context, job *fixjob.Job, log *slog.Logger) (fix
 		return fixjob.Result{}, err
 	}
 
-	out, err := f.runClaude(ctx, dir, prompt(job), f.cfg.tools, f.cfg.maxTurns, f.cfg.model)
+	out, err := f.runClaude(ctx, job, rl, dir, prompt(job), f.fixTools(job, rl), f.cfg.maxTurns, f.cfg.model)
 	if err != nil {
 		return fixjob.Result{}, err
 	}
@@ -251,9 +319,12 @@ func (f *fixer) fix(ctx context.Context, job *fixjob.Job, log *slog.Logger) (fix
 		if verdict.Fixed {
 			summary = "The agent said it fixed the error but changed no files.\n\n" + summary
 		}
+		rl.step("No fix: %s", clip(summary, 600))
 		return fixjob.Result{Status: fixjob.StatusNoFix, Summary: summary}, nil
 	}
+	rl.step("Changed files:\n%s", strings.TrimRight(status, "\n"))
 	if strings.Contains(status, ".github/") {
+		rl.step("Not pushing: the change touches .github/")
 		return fixjob.Result{Status: fixjob.StatusNoFix, Summary: "The proposed change touched .github/ (workflows), which the fixer never pushes.\n\n" + verdict.Summary}, nil
 	}
 	title := verdict.Title
@@ -273,8 +344,10 @@ func (f *fixer) fix(ctx context.Context, job *fixjob.Job, log *slog.Logger) (fix
 	stat, _ := g.run(ctx, dir, "diff", "--stat", "HEAD~1", "HEAD")
 	stat = strings.TrimSpace(stat)
 	if job.DryRun {
+		rl.step("Dry run: not pushing %s", job.Branch)
 		return fixjob.Result{Status: fixjob.StatusDryRun, Summary: verdict.Summary, Diffstat: stat}, nil
 	}
+	rl.step("Pushing %s", job.Branch)
 	if _, err := g.run(ctx, dir, "push", "origin", job.Branch); err != nil {
 		return fixjob.Result{}, fmt.Errorf("push: %w", err)
 	}
@@ -285,7 +358,32 @@ func (f *fixer) fix(ctx context.Context, job *fixjob.Job, log *slog.Logger) (fix
 		return fixjob.Result{}, fmt.Errorf("open pull request: %w", err)
 	}
 	log.Info("pull request opened", "url", url)
+	rl.step("Opened %s", url)
 	return fixjob.Result{Status: fixjob.StatusPR, PRNumber: num, PRURL: url, Summary: verdict.Summary, Diffstat: stat}, nil
+}
+
+// fixTools is what Claude may use in a fix job: reading and editing, the
+// job's commands, and the permission mode (logged).
+func (f *fixer) fixTools(job *fixjob.Job, rl *runLog) string {
+	tools := f.cfg.tools
+	var allowed []string
+	for _, c := range job.Commands {
+		if validCommand(c) {
+			tools += ",Bash(" + c + ":*)"
+			allowed = append(allowed, c)
+		}
+	}
+	switch job.Permissions {
+	case fixjob.PermAll:
+		rl.step("Permissions: everything (no checks)")
+	case fixjob.PermAuto:
+		rl.step("Permissions: auto mode (Claude runs what it needs; risky actions are blocked)")
+	default:
+		if len(allowed) > 0 {
+			rl.step("Claude may run: %s", strings.Join(allowed, ", "))
+		}
+	}
+	return tools
 }
 
 // prompt is the task for Claude Code. The brief is telemetry: data, not
@@ -310,38 +408,98 @@ SENTINEL_RESULT: {"fixed": true or false, "title": "<pull request title, under 7
 		job.Repo, job.IssueNumber, job.Brief)
 }
 
-func (f *fixer) runClaude(ctx context.Context, dir, p, tools string, maxTurns int, model string) (string, error) {
+// claudeEnv is the agent's environment for a job: the sign-in Sentinel sent
+// with it, or the fixer's own.
+func (f *fixer) claudeEnv(job *fixjob.Job) []string {
+	if job.Claude == nil || job.Claude.Token == "" {
+		// Sentinel holds jobs back while neither has a sign-in.
+		return f.cfg.claudeEnv
+	}
+	env := make([]string, 0, len(f.cfg.claudeEnv)+1)
+	for _, kv := range f.cfg.claudeEnv {
+		if !strings.HasPrefix(kv, "CLAUDE_CODE_OAUTH_TOKEN=") && !strings.HasPrefix(kv, "ANTHROPIC_API_KEY=") {
+			env = append(env, kv)
+		}
+	}
+	return append(env, job.Claude.Env())
+}
+
+// runClaude runs Claude Code headless and returns its final reply. Its
+// stream (messages and tool calls) goes to the run log, its usage to rl.
+func (f *fixer) runClaude(ctx context.Context, job *fixjob.Job, rl *runLog, dir, p, tools string, maxTurns int, model string) (string, error) {
+	env := f.claudeEnv(job)
+	if job.Model != "" {
+		model = job.Model
+	}
 	ctx, cancel := context.WithTimeout(ctx, f.cfg.timeout)
 	defer cancel()
-	args := []string{"-p", p, "--output-format", "json", "--max-turns", strconv.Itoa(maxTurns), "--allowedTools", tools}
+	args := []string{"-p", p, "--output-format", "stream-json", "--verbose", "--max-turns", strconv.Itoa(maxTurns), "--allowedTools", tools}
 	if model != "" {
 		args = append(args, "--model", model)
 	}
+	shown := model
+	if shown == "" {
+		shown = "default model"
+	}
+	// Investigations always only read, whatever the fix jobs may do.
+	if job.Kind != fixjob.KindAnalyze {
+		switch job.Permissions {
+		case fixjob.PermAll:
+			args = append(args, "--permission-mode", "bypassPermissions")
+		case fixjob.PermAuto:
+			args = append(args, "--permission-mode", "auto")
+		}
+	}
+	if validEffort(job.Effort) && job.Effort != "" {
+		args = append(args, "--effort", job.Effort)
+		shown += ", effort " + job.Effort
+	}
+	rl.step("Running Claude Code (%s, at most %d turns, %s)", shown, maxTurns, f.cfg.timeout)
 	cmd := exec.CommandContext(ctx, f.cfg.claude, args...)
 	cmd.Dir = dir
-	cmd.Env = f.cfg.claudeEnv
+	cmd.Env = env
 	if err := asAgent(cmd, dir); err != nil {
 		return "", fmt.Errorf("handing the checkout to the agent user: %w", err)
 	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
-	var res struct {
-		Result  string `json:"result"`
-		IsError bool   `json:"is_error"`
-		Subtype string `json:"subtype"`
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", err
 	}
-	if jerr := json.Unmarshal(stdout.Bytes(), &res); jerr != nil {
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("claude: %w", err)
+	}
+	var lastOut tailBuffer
+	res, rerr := readStream(io.TeeReader(stdout, &lastOut), rl)
+	err = cmd.Wait()
+	if !res.found {
 		if err == nil {
-			err = jerr
+			err = rerr
 		}
-		return "", fmt.Errorf("claude: %w: %s", err, tail(stderr.String()+stdout.String(), 800))
+		if err == nil {
+			err = errors.New("no result message")
+		}
+		return "", fmt.Errorf("claude: %w: %s", err, tail(stderr.String()+lastOut.String(), 800))
 	}
-	if res.IsError && res.Result == "" {
-		return "", fmt.Errorf("claude ended with %s: %s", res.Subtype, tail(stderr.String(), 800))
+	if res.isError && res.result == "" {
+		return "", fmt.Errorf("claude ended with %s: %s", res.subtype, tail(stderr.String(), 800))
 	}
-	return res.Result, nil
+	return res.result, nil
 }
+
+// tailBuffer keeps the last few KB written to it, for error messages.
+type tailBuffer struct{ b []byte }
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.b = append(t.b, p...)
+	if len(t.b) > 4096 {
+		t.b = t.b[len(t.b)-4096:]
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) String() string { return string(t.b) }
 
 type verdict struct {
 	Fixed   bool   `json:"fixed"`

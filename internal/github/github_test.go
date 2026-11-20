@@ -45,7 +45,10 @@ func TestRelabelAndLinkedPRs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(prs) != 2 || prs[0].Number != 7 || prs[0].Merged || prs[1].Number != 9 || !prs[1].Merged {
+	// Pull requests of other repositories are listed with their repository
+	// (fixes across repositories); callers pick what they need.
+	if len(prs) != 3 || prs[0].Number != 7 || prs[0].Merged || prs[0].Repo != "acme/app" || prs[1].Number != 9 || !prs[1].Merged ||
+		prs[2].Repo != "other/repo" || prs[2].Number != 4 {
 		t.Fatalf("prs: %+v", prs)
 	}
 }

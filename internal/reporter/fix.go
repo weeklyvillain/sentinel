@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/weeklyvillain/sentinel/internal/ai"
@@ -184,10 +185,60 @@ func (r *Reporter) trackFixes(ctx context.Context) error {
 	return nil
 }
 
+// updateMultiFix follows a fix across repositories: merged when every one of
+// its pull requests is merged, closed when one was closed without merging.
+// The other repositories' pull requests mention the issue, so they are on
+// its timeline too.
+func (r *Reporter) updateMultiFix(ctx context.Context, g store.Group, prs []github.PullRef, now time.Time) error {
+	byURL := map[string]github.PullRef{}
+	for _, p := range prs {
+		byURL[p.URL] = p
+	}
+	merged, closed := 0, false
+	list := append([]store.FixPR(nil), g.FixPRs...)
+	for i, f := range list {
+		if p, ok := byURL[f.URL]; ok {
+			list[i].State, list[i].Merged = p.State, p.Merged
+		}
+		if list[i].Merged {
+			merged++
+		} else if list[i].State == "closed" {
+			closed = true
+		}
+	}
+	if err := r.Store.SetFixPRs(ctx, g.ID, list); err != nil {
+		return err
+	}
+	first := list[0]
+	info := &notify.IssueInfo{Repo: g.Repo, Number: g.IssueNumber, URL: g.IssueURL}
+	switch {
+	case merged == len(list):
+		if g.FixState != store.FixMerged {
+			r.Log.Info("fix merged in every repository", "issue", g.IssueNumber, "prs", len(list))
+			r.notify(notify.Event{Type: notify.FixMerged, Service: g.Service, Group: groupInfo(g), Issue: info,
+				Message: fmt.Sprintf("Fix for %s in %s was merged in %d repositories", g.Title, g.Service, len(list))})
+		}
+		return r.Store.SetFixState(ctx, g.ID, store.FixMerged, first.Number, first.URL, now)
+	case closed:
+		return r.Store.SetFixState(ctx, g.ID, store.FixPRClosed, first.Number, first.URL, now)
+	}
+	return r.Store.SetFixState(ctx, g.ID, store.FixPROpen, first.Number, first.URL, now)
+}
+
 // updateFix moves a fix attempt along from the issue's linked pull requests.
 // Only pull requests can count that were opened for this attempt, i.e. are
 // not the one an earlier attempt already recorded.
-func (r *Reporter) updateFix(ctx context.Context, g store.Group, prs []github.PullRef, now time.Time) error {
+func (r *Reporter) updateFix(ctx context.Context, g store.Group, all []github.PullRef, now time.Time) error {
+	if len(g.FixPRs) > 1 {
+		return r.updateMultiFix(ctx, g, all, now)
+	}
+	// A fix in the issue's repository: its own pull requests only.
+	prs := make([]github.PullRef, 0, len(all))
+	for _, p := range all {
+		if p.Repo == "" || strings.EqualFold(p.Repo, g.Repo) {
+			prs = append(prs, p)
+		}
+	}
 	var pr *github.PullRef
 	for i := range prs {
 		p := prs[i]

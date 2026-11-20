@@ -6,9 +6,10 @@ import { CopyLink, Empty, ErrorNote, Icon, Loading, Modal, Seg, StatusBadge, use
 import { useServices } from "../shared";
 import { ago, fmtFull, fmtNum, fmtTime, LEVEL_COLORS, levelOf } from "../util";
 import { Queue } from "./AI";
+import { FixerRuns } from "./FixerRuns";
 
-type Tab = "active" | "pending" | "open" | "resolved" | "ignored" | "all" | "releases" | "queue";
-const TAB_STATUS: Record<Exclude<Tab, "queue" | "releases">, string> = { active: "open,pending", pending: "pending", open: "open", resolved: "resolved", ignored: "ignored", all: "" };
+type Tab = "active" | "pending" | "open" | "resolved" | "ignored" | "all" | "releases" | "queue" | "fixer";
+const TAB_STATUS: Record<Exclude<Tab, "queue" | "releases" | "fixer">, string> = { active: "open,pending", pending: "pending", open: "open", resolved: "resolved", ignored: "ignored", all: "" };
 
 const SORTS = [
   { value: "", label: "Last seen" },
@@ -20,7 +21,7 @@ const SORTS = [
 export default function Issues() {
   const [params, setParams] = useSearchParams();
   const tab = (params.get("tab") as Tab) ?? "active";
-  const listTab = tab !== "queue" && tab !== "releases";
+  const listTab = tab !== "queue" && tab !== "releases" && tab !== "fixer";
   const service = params.get("service") ?? "";
   const env = params.get("env") ?? "";
   const release = params.get("release") ?? "";
@@ -63,6 +64,7 @@ export default function Issues() {
         <h1>Issues</h1>
         <span className="sub">Deduplicated error groups and the GitHub issues filed for them</span>
         <div className="actions">
+          {tab !== "queue" && tab !== "releases" && <FixAllButton service={service} onDone={() => groups.reload()} />}
           <CopyLink />
         </div>
       </div>
@@ -80,9 +82,10 @@ export default function Issues() {
               { value: "all", label: "All" },
               { value: "releases", label: "Releases" },
               { value: "queue", label: "AI queue" },
+              { value: "fixer", label: "Fixer" },
             ]}
           />
-          {tab !== "queue" && (
+          {tab !== "queue" && tab !== "fixer" && (
             <select value={service} onChange={(e) => set("service", e.target.value)} aria-label="Service">
               <option value="">All services</option>
               {(svcs.data ?? []).map((s) => (
@@ -132,10 +135,85 @@ export default function Issues() {
       </div>
       {tab === "queue" ? (
         <Queue />
+      ) : tab === "fixer" ? (
+        <FixerRuns />
       ) : tab === "releases" ? (
         <Releases releases={releases} onOpen={(r) => setParams(new URLSearchParams({ tab: "all", service: r.service, release: r.version, new: "1" }))} />
       ) : (
         <GroupTable groups={groups} onOpen={(id) => nav(`/issues/${id}`)} onChanged={groups.reload} />
+      )}
+    </>
+  );
+}
+
+// FixAllButton requests a fix for every open error issue (of the selected
+// service) that has none on the way: each is queued for the fixer, or gets
+// the fix label in GitHub Actions mode.
+function FixAllButton({ service, onDone }: { service: string; onDone: () => void }) {
+  const run = useAction();
+  const [preview, setPreview] = useState<{ eligible: number; mode: "fixer" | "actions" }>();
+  const [busy, setBusy] = useState(false);
+  const open = async () => {
+    const p = await run(() => api.post<{ eligible: number; mode: "fixer" | "actions" }>("/api/fix-all", { service, preview: true }));
+    if (p) setPreview(p);
+  };
+  const go = async () => {
+    setBusy(true);
+    const r = await run(
+      () => api.post<{ requested: number; skipped: number; errors?: string[] }>("/api/fix-all", { service }),
+      (r) =>
+        `Fix requested for ${r.requested} issue${r.requested === 1 ? "" : "s"}` +
+        (r.skipped ? `, ${r.skipped} skipped` : "") +
+        (r.errors?.length ? `; ${r.errors.length} failed: ${r.errors[0]}` : ""),
+    );
+    setBusy(false);
+    if (r) {
+      setPreview(undefined);
+      onDone();
+    }
+  };
+  return (
+    <>
+      <button onClick={open} title="Ask Claude Code to fix every open error issue again">
+        Fix all open issues
+      </button>
+      {preview && (
+        <Modal
+          title="Fix all open issues"
+          onClose={() => !busy && setPreview(undefined)}
+          footer={
+            <>
+              <button onClick={() => setPreview(undefined)} disabled={busy}>
+                Cancel
+              </button>
+              <button className="primary" onClick={go} disabled={busy || preview.eligible === 0}>
+                {busy ? "Requesting…" : `Request ${preview.eligible} fix${preview.eligible === 1 ? "" : "es"}`}
+              </button>
+            </>
+          }
+        >
+          {preview.eligible === 0 ? (
+            <p>No open error issue{service ? ` in ${service}` : ""} without a fix on the way.</p>
+          ) : (
+            <>
+              <p>
+                Request a fix for <strong>{preview.eligible}</strong> open error issue{preview.eligible === 1 ? "" : "s"}
+                {service ? (
+                  <>
+                    {" "}
+                    in <strong>{service}</strong>
+                  </>
+                ) : null}
+                , including ones an earlier attempt could not fix. Issues with a fix queued, running or in an open pull request are left alone.
+              </p>
+              <p className="small muted">
+                {preview.mode === "fixer"
+                  ? "Each issue gets a comment and goes to Sentinel's fixer, which works through them one at a time; follow them under Issues → Fixer."
+                  : "Each issue gets a comment and the fix label, which starts the fix workflow in its repository."}
+              </p>
+            </>
+          )}
+        </Modal>
       )}
     </>
   );
@@ -231,7 +309,7 @@ function FixBadge({ g }: { g: Group }) {
   const badge = (
     <span className={"badge " + f.cls} title={f.help}>
       🤖 {f.label}
-      {g.fix_pr_number ? ` #${g.fix_pr_number}` : ""}
+      {(g.fix_prs?.length ?? 0) > 1 ? ` · ${g.fix_prs!.length} repos` : g.fix_pr_number ? ` #${g.fix_pr_number}` : ""}
     </span>
   );
   return g.fix_pr_url ? (
@@ -550,7 +628,7 @@ export function IssueDetail() {
         </div>
       )}
       {g.fix_state && (
-        <div className={"notice" + (g.fix_state === "no_pr" ? " warn" : "")} style={{ marginBottom: 16, display: "flex", gap: 10, alignItems: "center" }}>
+        <div className={"notice" + (g.fix_state === "no_pr" ? " warn" : "")} style={{ marginBottom: 16, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <FixBadge g={g} />
           <span className="small">
             {FIX[g.fix_state].help}
@@ -563,10 +641,25 @@ export function IssueDetail() {
               </details>
             )}
           </span>
-          {g.fix_pr_url && (
+          {g.fix_pr_url && (g.fix_prs?.length ?? 0) < 2 && (
             <a className="btn small" href={g.fix_pr_url} target="_blank" rel="noreferrer" style={{ marginLeft: "auto" }}>
               <Icon.github /> Review pull request #{g.fix_pr_number}
             </a>
+          )}
+          {(g.fix_prs?.length ?? 0) > 1 && (
+            <div style={{ flexBasis: "100%" }}>
+              <div className="small muted" style={{ margin: "4px 0 6px" }}>
+                The fix spans {g.fix_prs!.length} repositories. Review and merge them together; it counts as merged when all are.
+              </div>
+              <div className="row">
+                {g.fix_prs!.map((p) => (
+                  <a key={p.url} className="btn small" href={p.url} target="_blank" rel="noreferrer">
+                    <Icon.github /> {p.repo}#{p.number}
+                    <span className={"badge " + (p.merged ? "ok" : p.state === "closed" ? "bad" : "accent")}>{p.merged ? "merged" : p.state === "closed" ? "closed" : "open"}</span>
+                  </a>
+                ))}
+              </div>
+            </div>
           )}
         </div>
       )}

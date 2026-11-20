@@ -24,6 +24,9 @@ import (
 // `claude -p --output-format json` does.
 func TestMain(m *testing.M) {
 	if mode := os.Getenv("FAKE_CLAUDE"); mode != "" {
+		if f := os.Getenv("FAKE_ARGS_FILE"); f != "" {
+			os.WriteFile(f, []byte(strings.Join(os.Args[1:], "\n")), 0o644)
+		}
 		if os.Getenv("FIXER_TOKEN") != "" || os.Getenv("GH_TOKEN") != "" {
 			fmt.Print(`{"result":"leaked env","is_error":true}`)
 			os.Exit(1)
@@ -36,12 +39,38 @@ func TestMain(m *testing.M) {
 				text = "Read calc.go.\nSENTINEL_ANALYSIS: {\"title\": \"[calc] Div panics on zero\", \"summary\": \"S\", \"likely_cause\": \"calc.go:3 divides by b\", \"next_steps\": [\"guard b\"], \"verdict\": \"fix\", \"severity\": \"high\", \"confidence\": 0.9, \"reason\": \"plain bug\"}"
 			}
 		}
+		if mode == "multi" || mode == "multi-second" {
+			// Change every repository folder (or only the second one).
+			entries, _ := os.ReadDir(".")
+			n := 0
+			for _, e := range entries {
+				if !e.IsDir() {
+					continue
+				}
+				n++
+				if mode == "multi-second" && n != 2 {
+					continue
+				}
+				os.WriteFile(filepath.Join(e.Name(), "contract.go"), []byte("package x\n\n// field renamed on both sides\n"), 0o644)
+			}
+			text = "Changed both.\nSENTINEL_RESULT: {\"fixed\": true, \"title\": \"Rename cart_id on both sides\", \"summary\": \"The frontend sent cartId.\"}"
+		}
 		if mode == "fix" {
 			os.WriteFile("calc.go", []byte("package calc\n\nfunc Div(a, b int) int {\n\tif b == 0 {\n\t\treturn 0\n\t}\n\treturn a / b\n}\n"), 0o644)
 			text = "Fixed.\nSENTINEL_RESULT: {\"fixed\": true, \"title\": \"Guard division by zero\", \"summary\": \"Div divided by zero for empty carts.\"}"
 		}
-		out, _ := json.Marshal(map[string]any{"type": "result", "subtype": "success", "is_error": false, "result": text})
-		os.Stdout.Write(out)
+		enc := json.NewEncoder(os.Stdout)
+		enc.Encode(map[string]any{"type": "system", "subtype": "init", "model": "claude-test-1"})
+		enc.Encode(map[string]any{"type": "assistant", "message": map[string]any{"content": []any{
+			map[string]any{"type": "text", "text": "Reading the code."},
+			map[string]any{"type": "tool_use", "name": "Read", "input": map[string]any{"file_path": "calc.go"}},
+		}}})
+		enc.Encode(map[string]any{"type": "user", "message": map[string]any{"content": []any{
+			map[string]any{"type": "tool_result", "content": []any{map[string]any{"type": "text", "text": "package calc"}}},
+		}}})
+		enc.Encode(map[string]any{"type": "result", "subtype": "success", "is_error": false, "result": text,
+			"num_turns": 3, "duration_ms": 1200, "total_cost_usd": 0.05,
+			"usage": map[string]any{"input_tokens": 10, "output_tokens": 200, "cache_read_input_tokens": 3000, "cache_creation_input_tokens": 400}})
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
@@ -75,6 +104,7 @@ type fakeSentinel struct {
 	mu      sync.Mutex
 	job     *fixjob.Job
 	results []fixjob.Result
+	log     []fixjob.LogLine
 }
 
 func newFixer(t *testing.T, mode string, sentinel string) *fixer {
@@ -100,7 +130,7 @@ func TestFixerOpensPullRequest(t *testing.T) {
 	defer gh.Close()
 
 	fs := &fakeSentinel{job: &fixjob.Job{ID: 7, Attempt: 1, Repo: "acme/app", IssueNumber: 12, Title: "runtime error: integer divide by zero",
-		Brief: "panic in Div", Branch: "sentinel-fix-12-1", CloneURL: bare, APIURL: gh.URL, Token: "repo-token"}}
+		Brief: "panic in Div", Branch: "sentinel-fix-12-1", CloneURL: bare, APIURL: gh.URL, Token: "repo-token", RunID: 99, Commands: []string{"go test", "go test; rm -rf /"}}}
 	sentinel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer secret-fixer-token" {
 			http.Error(w, "no", http.StatusUnauthorized)
@@ -116,6 +146,10 @@ func TestFixerOpensPullRequest(t *testing.T) {
 			}
 			json.NewEncoder(w).Encode(fs.job)
 			fs.job = nil
+		case "/fixer/runs/99/log":
+			var b fixjob.LogBatch
+			json.NewDecoder(r.Body).Decode(&b)
+			fs.log = append(fs.log, b.Lines...)
 		case "/fixer/jobs/7/result":
 			var res fixjob.Result
 			json.NewDecoder(r.Body).Decode(&res)
@@ -147,6 +181,23 @@ func TestFixerOpensPullRequest(t *testing.T) {
 	res := fs.results[0]
 	if res.Status != fixjob.StatusPR || res.PRNumber != 42 || res.Attempt != 1 || !strings.Contains(res.Diffstat, "calc.go") {
 		t.Fatalf("result: %+v", res)
+	}
+	// The run's usage and log reach Sentinel.
+	if u := res.Usage; res.RunID != 99 || u == nil || u.Model != "claude-test-1" || u.Turns != 3 || u.OutputTokens != 200 || u.CacheReadTokens != 3000 || u.CostUSD != 0.05 {
+		t.Fatalf("usage: run %d %+v", res.RunID, res.Usage)
+	}
+	var kinds []string
+	for _, l := range fs.log {
+		kinds = append(kinds, l.Kind+": "+strings.SplitN(l.Text, "\n", 2)[0])
+	}
+	joined := strings.Join(kinds, "\n")
+	for _, want := range []string{"step: Cloning acme/app", "step: Claude Code started (model claude-test-1)", "text: Reading the code.", "tool: Read calc.go", "tool_result: package calc", "step: Claude may run: go test\n", "step: Pushing sentinel-fix-12-1", "step: Opened https://github.com/acme/app/pull/42"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("log has no %q:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "repo-token") {
+		t.Fatalf("log leaks the repository token:\n%s", joined)
 	}
 	if prBody["head"] != "sentinel-fix-12-1" || prBody["base"] != "main" || prBody["title"] != "Guard division by zero" ||
 		!strings.Contains(prBody["body"].(string), "Fixes #12") {
@@ -206,5 +257,133 @@ func TestParseVerdict(t *testing.T) {
 	}
 	if v := parseVerdict("no marker at all"); v.Fixed || v.Summary != "no marker at all" {
 		t.Fatalf("%+v", v)
+	}
+}
+
+// A fixer without its own sign-in uses the one Sentinel sends with the job,
+// which also replaces its own; the token comes from Sentinel's file.
+func TestFixerSignInAndTokenFromSentinel(t *testing.T) {
+	f := newFixer(t, "fix", "")
+	f.cfg.claudeEnv = append(f.cfg.claudeEnv, "CLAUDE_CODE_OAUTH_TOKEN=own")
+	env := strings.Join(f.claudeEnv(&fixjob.Job{Claude: &fixjob.ClaudeAuth{Kind: fixjob.AuthAPIKey, Token: "sk-ant-api-x"}}), "\n")
+	if !strings.Contains(env, "ANTHROPIC_API_KEY=sk-ant-api-x") || strings.Contains(env, "CLAUDE_CODE_OAUTH_TOKEN=own") {
+		t.Fatalf("job sign-in: %s", env)
+	}
+	if env := strings.Join(f.claudeEnv(&fixjob.Job{}), "\n"); !strings.Contains(env, "CLAUDE_CODE_OAUTH_TOKEN=own") {
+		t.Fatalf("own sign-in: %s", env)
+	}
+
+	f.cfg.token, f.cfg.tokenFile = "", filepath.Join(t.TempDir(), "token")
+	if _, err := f.token(); err == nil {
+		t.Fatal("no file yet: want an error")
+	}
+	os.WriteFile(f.cfg.tokenFile, []byte("from-sentinel\n"), 0o600)
+	if tok, err := f.token(); err != nil || tok != "from-sentinel" {
+		t.Fatalf("token: %q %v", tok, err)
+	}
+}
+
+func TestValidCommand(t *testing.T) {
+	for _, ok := range []string{"go test", "go build", "npm test", "gofmt"} {
+		if !validCommand(ok) {
+			t.Errorf("%q rejected", ok)
+		}
+	}
+	for _, bad := range []string{"", "go test; rm -rf /", "go test && x", "a|b", "$(x)", "go test *", "a\nb"} {
+		if validCommand(bad) {
+			t.Errorf("%q allowed", bad)
+		}
+	}
+}
+
+// Fix jobs get the permission mode set in the dashboard; investigations
+// always only read.
+func TestFixerPermissionModes(t *testing.T) {
+	bare := repo(t)
+	for _, c := range []struct {
+		kind, perm, want, notWant string
+	}{
+		{fixjob.KindFix, fixjob.PermCommands, "Bash(go test:*)", "--permission-mode"},
+		{fixjob.KindFix, fixjob.PermAuto, "--permission-mode\nauto", "bypassPermissions"},
+		{fixjob.KindFix, fixjob.PermAll, "--permission-mode\nbypassPermissions", "\nauto"},
+		{fixjob.KindAnalyze, fixjob.PermAll, "--allowedTools", "--permission-mode"},
+	} {
+		f := newFixer(t, "nofix", "")
+		args := filepath.Join(t.TempDir(), "args")
+		f.cfg.claudeEnv = append(f.cfg.claudeEnv, "FAKE_ARGS_FILE="+args)
+		f.work(context.Background(), &fixjob.Job{Kind: c.kind, ID: 1, Attempt: 1, AnalysisID: 1, Repo: "acme/app", IssueNumber: 5, Branch: "b", CloneURL: bare,
+			Permissions: c.perm, Commands: []string{"go test"}})
+		got, _ := os.ReadFile(args)
+		if !strings.Contains(string(got), c.want) || strings.Contains(string(got), c.notWant) {
+			t.Errorf("%s/%s: args\n%s", c.kind, c.perm, got)
+		}
+	}
+}
+
+// A fix across repositories: one pull request per changed repository, the
+// first closes the issue, and every one lists the others.
+func TestFixerAcrossRepositories(t *testing.T) {
+	api, web := repo(t), repo(t)
+	var mu sync.Mutex
+	opened := map[string]map[string]any{}
+	edited := map[string]string{}
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		var in map[string]any
+		json.NewDecoder(r.Body).Decode(&in)
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/acme/api/pulls" && r.Header.Get("Authorization") == "Bearer api-token":
+			opened["acme/api"] = in
+			w.Write([]byte(`{"number": 41, "html_url": "https://github.com/acme/api/pull/41"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/acme/web/pulls" && r.Header.Get("Authorization") == "Bearer web-token":
+			opened["acme/web"] = in
+			w.Write([]byte(`{"number": 7, "html_url": "https://github.com/acme/web/pull/7"}`))
+		case r.Method == http.MethodPatch:
+			edited[r.URL.Path] = in["body"].(string)
+			w.Write([]byte(`{}`))
+		default:
+			http.Error(w, "unexpected "+r.Method+" "+r.URL.Path+" "+r.Header.Get("Authorization"), http.StatusBadRequest)
+		}
+	}))
+	defer gh.Close()
+
+	f := newFixer(t, "multi", "")
+	job := &fixjob.Job{ID: 3, Attempt: 1, Repo: "acme/api", IssueNumber: 12, Title: "cart_id missing", Brief: "400 from POST /cart",
+		Branch: "sentinel-fix-12-1", CloneURL: api, APIURL: gh.URL, Token: "api-token",
+		Related: []fixjob.RelatedRepo{{Repo: "acme/web", Service: "web-frontend", CloneURL: web, Token: "web-token"}}}
+	res := f.work(context.Background(), job)
+	if res.Status != fixjob.StatusPR || len(res.PRs) != 2 || res.PRURL != "https://github.com/acme/api/pull/41" {
+		t.Fatalf("result: %+v", res)
+	}
+	if b := opened["acme/api"]["body"].(string); !strings.Contains(b, "Fixes #12") {
+		t.Fatalf("api pull request: %s", b)
+	}
+	if b := opened["acme/web"]["body"].(string); !strings.Contains(b, "Part of the fix for acme/api#12") || strings.Contains(b, "Fixes") {
+		t.Fatalf("web pull request: %s", b)
+	}
+	for _, p := range []string{"/repos/acme/api/pulls/41", "/repos/acme/web/pulls/7"} {
+		if b := edited[p]; !strings.Contains(b, "acme/api#41") || !strings.Contains(b, "acme/web#7") || !strings.Contains(b, "(this one)") {
+			t.Fatalf("%s not linked: %s", p, b)
+		}
+	}
+	for _, bare := range []string{api, web} {
+		if out, err := exec.Command("git", "--git-dir", bare, "show", "sentinel-fix-12-1:contract.go").CombinedOutput(); err != nil {
+			t.Fatalf("branch not pushed to %s: %v %s", bare, err, out)
+		}
+	}
+
+	// Only the related repository changed: its pull request closes the issue,
+	// and the issue's repository is left alone.
+	api2, web2 := repo(t), repo(t)
+	opened = map[string]map[string]any{}
+	f = newFixer(t, "multi-second", "")
+	job.CloneURL, job.Related[0].CloneURL, job.Attempt = api2, web2, 2
+	res = f.work(context.Background(), job)
+	if res.Status != fixjob.StatusPR || len(res.PRs) != 1 || opened["acme/api"] != nil {
+		t.Fatalf("one repository: %+v %v", res, opened)
+	}
+	if b := opened["acme/web"]["body"].(string); !strings.Contains(b, "Fixes acme/api#12") {
+		t.Fatalf("closing reference: %s", b)
 	}
 }
