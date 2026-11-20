@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, Delivery, Webhook, WebhookStyle } from "../api";
 import { Empty, ErrorNote, Loading, Modal, Seg, Switch, useAsync, useToast, useAction } from "../components/ui";
 import { DiscordPreview, SlackPreview } from "../components/WebhookPreview";
@@ -28,7 +29,7 @@ export default function Webhooks() {
   const toast = useToast();
   const run = useAction();
   const hooks = useAsync(() => api.get<HooksResp>("/api/webhooks"), []);
-  const [editing, setEditing] = useState<Partial<Webhook> | null>(null);
+  const navigate = useNavigate();
   const [log, setLog] = useState<Webhook | null>(null);
 
   const test = async (h: Webhook) => {
@@ -50,7 +51,7 @@ export default function Webhooks() {
       <div className="page-head">
         <span className="sub">Send issue and outage events to Slack, Discord or any HTTP endpoint, styled per service with a live preview. Alarms choose their own webhooks.</span>
         <div className="actions">
-          <button className="primary" onClick={() => setEditing({})}>
+          <button className="primary" onClick={() => navigate("/settings/webhooks/new")}>
             + New webhook
           </button>
         </div>
@@ -80,7 +81,7 @@ export default function Webhooks() {
                   </td>
                   <td>
                     <div style={{ fontWeight: 600 }}>
-                      {h.name} {h.has_secret && <span className="badge" title="Requests are signed with X-Sentinel-Signature">signed</span>}
+                      <Link to={`/settings/webhooks/${h.id}`}>{h.name}</Link> {h.has_secret && <span className="badge" title="Requests are signed with X-Sentinel-Signature">signed</span>}
                     </div>
                     <div className="small faint mono truncate" style={{ maxWidth: 360 }}>
                       {safeHost(h.url)}
@@ -98,7 +99,7 @@ export default function Webhooks() {
                     <button className="small" onClick={() => setLog(h)}>
                       Deliveries
                     </button>{" "}
-                    <button className="small" onClick={() => setEditing(h)}>
+                    <button className="small" onClick={() => navigate(`/settings/webhooks/${h.id}`)}>
                       Edit
                     </button>{" "}
                     <button className="small danger" onClick={() => remove(h)}>
@@ -127,20 +128,6 @@ export default function Webhooks() {
   "alarm": null
 }`}</pre>
       </div>
-      {editing && (
-        <WebhookForm
-          initial={editing}
-          eventTypes={hooks.data?.event_types ?? []}
-          previewEvents={hooks.data?.preview_events ?? ["issue.created"]}
-          placeholders={hooks.data?.placeholders ?? []}
-          onClose={() => setEditing(null)}
-          onSaved={() => {
-            setEditing(null);
-            hooks.reload();
-            toast("Webhook saved");
-          }}
-        />
-      )}
       {log && <DeliveryLog hook={log} onClose={() => setLog(null)} />}
     </>
   );
@@ -197,6 +184,50 @@ function defaultTemplate(format: string, rich: boolean) {
   return format === "discord" ? "{icon} **Sentinel** — {message} {link}" : "{icon} *Sentinel* — {message} {link}";
 }
 
+/** The webhook editor page: /settings/webhooks/new or /settings/webhooks/:id. */
+export function WebhookEditor() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const toast = useToast();
+  const hooks = useAsync(() => api.get<HooksResp>("/api/webhooks"), []);
+  const isNew = !id || id === "new";
+  const hook: Partial<Webhook> | undefined = isNew ? {} : hooks.data?.webhooks.find((h) => String(h.id) === id);
+  const back = () => navigate("/settings/webhooks");
+  return (
+    <>
+      <div className="page-head section-head">
+        <div>
+          <div className="small muted wh-crumbs">
+            <Link to="/settings">Settings</Link> / <Link to="/settings/webhooks">Webhooks</Link>
+          </div>
+          <h1>{isNew ? "New webhook" : hook ? `Edit ${hook.name}` : "Webhook"}</h1>
+        </div>
+      </div>
+      <ErrorNote error={hooks.error} />
+      {!hooks.data ? (
+        <Loading />
+      ) : !hook ? (
+        <Empty title="Webhook not found">
+          <Link to="/settings/webhooks">Back to webhooks</Link>
+        </Empty>
+      ) : (
+        <WebhookForm
+          key={id}
+          initial={hook}
+          eventTypes={hooks.data.event_types}
+          previewEvents={hooks.data.preview_events}
+          placeholders={hooks.data.placeholders}
+          onClose={back}
+          onSaved={() => {
+            toast("Webhook saved");
+            back();
+          }}
+        />
+      )}
+    </>
+  );
+}
+
 function WebhookForm(props: {
   initial: Partial<Webhook>;
   eventTypes: string[];
@@ -244,6 +275,19 @@ function WebhookForm(props: {
     }
   };
 
+  const [start] = useState(() => JSON.stringify(h));
+  const dirty = JSON.stringify(h) !== start || secret !== "" || clearSecret;
+  const cancel = () => {
+    if (dirty && !confirm("Discard your changes to this webhook?")) return;
+    props.onClose();
+  };
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
   const tplRef = useRef<HTMLTextAreaElement>(null);
   const insert = (name: string) => {
     const el = tplRef.current;
@@ -260,25 +304,14 @@ function WebhookForm(props: {
   };
 
   return (
-    <Modal
-      title={h.id ? `Edit ${props.initial.name}` : "New webhook"}
-      onClose={props.onClose}
-      wide="x"
-      footer={
-        <>
-          <button onClick={props.onClose}>Cancel</button>
-          <button className="primary" onClick={save} disabled={!h.name || !h.url}>
-            Save
-          </button>
-        </>
-      }
-    >
-      <ErrorNote error={err} />
+    <>
       <div className="wh-editor">
         <div className="wh-form">
+          <section className="card wh-section">
+          <h2>Destination</h2>
           <label className="field">
             Name
-            <input value={h.name} onChange={(e) => set({ name: e.target.value })} placeholder="#ops-alerts" autoFocus />
+            <input value={h.name} onChange={(e) => set({ name: e.target.value })} placeholder="#ops-alerts" autoFocus={!h.id} />
           </label>
           <label className="field">
             URL
@@ -298,10 +331,11 @@ function WebhookForm(props: {
               />
             </div>
           </div>
+          </section>
 
           {chat && (
-            <fieldset className="wh-section">
-              <legend>Message</legend>
+            <section className="card wh-section">
+              <h2>Message</h2>
               <div className="field">
                 Layout
                 <div>
@@ -394,11 +428,11 @@ function WebhookForm(props: {
                   </div>
                 </>
               )}
-            </fieldset>
+            </section>
           )}
 
-          <fieldset className="wh-section">
-            <legend>Delivery</legend>
+          <section className="card wh-section">
+            <h2>Delivery</h2>
             <label className="field">
               Signing secret
               <input type="password" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder={h.has_secret ? "•••••• (unchanged)" : "optional"} autoComplete="new-password" />
@@ -424,11 +458,19 @@ function WebhookForm(props: {
             <label className="check">
               <input type="checkbox" checked={h.enabled} onChange={(e) => set({ enabled: e.target.checked })} /> Enabled
             </label>
-          </fieldset>
+          </section>
+          <div className="wh-actions">
+            <ErrorNote error={err} />
+            <button onClick={cancel}>Cancel</button>
+            <button className="primary" onClick={save} disabled={!h.name || !h.url}>
+              {h.id ? "Save changes" : "Create webhook"}
+            </button>
+            {dirty && <span className="small faint">Unsaved changes</span>}
+          </div>
         </div>
         <LivePreview format={fmt} style={style} events={props.previewEvents} subscribed={h.events ?? []} />
       </div>
-    </Modal>
+    </>
   );
 }
 

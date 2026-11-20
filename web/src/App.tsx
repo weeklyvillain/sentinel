@@ -20,6 +20,7 @@ const Metrics = lazy(() => import("./pages/Metrics"));
 const Services = lazy(() => import("./pages/Services"));
 const Alarms = lazy(() => import("./pages/Alarms"));
 const Webhooks = lazy(() => import("./pages/Webhooks"));
+const WebhookEditor = lazy(() => import("./pages/Webhooks").then((m) => ({ default: m.WebhookEditor })));
 const GitHub = lazy(() => import("./pages/GitHub"));
 const Fixer = lazy(() => import("./pages/Fixer"));
 const Setup = lazy(() => import("./pages/Setup"));
@@ -173,6 +174,7 @@ function ShellBody() {
             <Route path="/dashboards/explore" element={<Section title="Dashboards" base="/dashboards" tab="explore" tabs={dashTabs} />} />
             <Route path="/dashboards/:id" element={<DashboardView />} />
             <Route path="/alerts/:tab?" element={<Section title="Alerts" base="/alerts" tabs={alertTabs} />} />
+            <Route path="/settings/webhooks/:id" element={<WebhookEditor />} />
             <Route path="/settings/:tab?" element={<Section title="Settings" base="/settings" tabs={settingsTabs} />} />
             <Route path="/setup" element={<Setup />} />
             {/* Old addresses, kept working for bookmarks and links in issues. */}
