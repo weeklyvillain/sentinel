@@ -1,6 +1,9 @@
 import { lazy, Suspense, useEffect } from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
 import { api, Me } from "./api";
+import type { SetupState } from "./pages/Setup";
+import { Bootstrap, Welcome } from "./pages/Welcome";
+import { AuthLayout } from "./components/Showcase";
 import { Icon, Loading, Logo, Moved, Section, SectionTab, useAsync } from "./components/ui";
 import { MeCtx, SharedData, useMe, useStatus } from "./shared";
 
@@ -18,6 +21,10 @@ const Services = lazy(() => import("./pages/Services"));
 const Alarms = lazy(() => import("./pages/Alarms"));
 const Webhooks = lazy(() => import("./pages/Webhooks"));
 const GitHub = lazy(() => import("./pages/GitHub"));
+const Fixer = lazy(() => import("./pages/Fixer"));
+const Setup = lazy(() => import("./pages/Setup"));
+const Access = lazy(() => import("./pages/Access"));
+const Integrations = lazy(() => import("./pages/Integrations"));
 const Uptime = lazy(() => import("./pages/Uptime"));
 const AI = lazy(() => import("./pages/AI"));
 const Dashboards = lazy(() => import("./pages/Dashboards"));
@@ -32,7 +39,7 @@ export default function App() {
   }, [me]);
 
   if (!me.data) return me.error ? <div className="login"><div className="notice bad">{me.error}</div></div> : <Loading />;
-  if (!me.data.signed_in) return <Login me={me.data} />;
+  if (!me.data.signed_in) return <SignedOut />;
   return (
     <MeCtx.Provider value={me.data}>
       <Shell />
@@ -40,27 +47,27 @@ export default function App() {
   );
 }
 
-function Login({ me }: { me: Me }) {
+// SignedOut is the first-start setup until Sentinel has its GitHub App and
+// an admin, then the GitHub sign-in.
+function SignedOut() {
+  const boot = useAsync(() => api.get<Bootstrap>("/api/bootstrap"), []);
+  if (!boot.data) return boot.error ? <div className="login"><div className="notice bad">{boot.error}</div></div> : <Loading />;
+  if (boot.data.setup) return <Welcome boot={boot.data} onChange={boot.reload} />;
+  return <Login />;
+}
+
+function Login() {
   const params = new URLSearchParams(location.search);
   return (
-    <div className="login">
-      <div className="card">
-        <Logo className="logo" />
-        <h1>Sentinel</h1>
-        <p className="muted">Error grouping, logs, metrics and alerts for your OpenTelemetry services.</p>
-        {params.get("error") && <div className="notice bad">{params.get("error")}</div>}
-        {me.github_sign_in ? (
-          <a className="btn primary" href="/auth/login" style={{ justifyContent: "center", width: "100%", marginTop: 12, textDecoration: "none" }}>
-            <Icon.github /> Sign in with GitHub
-          </a>
-        ) : (
-          <div className="notice warn" style={{ textAlign: "left", marginTop: 12 }}>
-            GitHub sign-in is not configured. Set <code>GITHUB_APP_ID</code>, <code>GITHUB_APP_PRIVATE_KEY_FILE</code>, <code>GITHUB_APP_CLIENT_ID</code>{" "}
-            and <code>GITHUB_APP_CLIENT_SECRET</code>, plus <code>ALLOWED_USERS</code> or <code>ALLOWED_ORG</code>.
-          </div>
-        )}
-      </div>
-    </div>
+    <AuthLayout>
+      <h1>Welcome back</h1>
+      <p className="auth-sub">Sign in to see your services' errors, logs, alarms and fixes.</p>
+      {params.get("error") && <div className="notice bad">{params.get("error")}</div>}
+      <a className="btn github" href="/auth/login">
+        <Icon.github /> Continue with GitHub
+      </a>
+      <p className="auth-note">Only people allowed under Settings → Access can sign in.</p>
+    </AuthLayout>
   );
 }
 
@@ -78,6 +85,8 @@ function ShellBody() {
   const firing = status?.firing_alarms.length ?? 0;
   const checksDown = status?.checks.down.length ?? 0;
   const analyzing = status?.analyzing ?? 0;
+  const setup = useAsync(() => api.get<SetupState>("/api/setup"), [], 60000);
+  const setupLeft = setup.data?.remaining ?? 0;
   const nav = [
     { to: "/", label: "Overview", icon: Icon.overview, end: true },
     { to: "/logs", label: "Logs", icon: Icon.logs },
@@ -86,6 +95,7 @@ function ShellBody() {
     { to: "/dashboards", label: "Dashboards", icon: Icon.dashboards },
     { to: "/alerts", label: "Alerts", icon: Icon.alarms, count: firing + checksDown },
     { to: "/settings", label: "Settings", icon: Icon.settings },
+    { to: "/setup", label: "Setup", icon: Icon.setup, count: setupLeft },
   ];
   const dashTabs: SectionTab[] = [
     { path: "", label: "Dashboards", element: <Dashboards /> },
@@ -99,7 +109,10 @@ function ShellBody() {
   ];
   const settingsTabs: SectionTab[] = [
     { path: "services", label: "Services", element: <Services /> },
+    { path: "integrations", label: "Integrations", element: <Integrations /> },
+    { path: "access", label: "Access", element: <Access /> },
     { path: "github", label: "GitHub", element: <GitHub /> },
+    { path: "fixer", label: "Fixer", element: <Fixer /> },
     { path: "webhooks", label: "Webhooks", element: <Webhooks /> },
     { path: "ai", label: "AI", element: <AI /> },
   ];
@@ -148,6 +161,7 @@ function ShellBody() {
             <Route path="/dashboards/:id" element={<DashboardView />} />
             <Route path="/alerts/:tab?" element={<Section title="Alerts" base="/alerts" tabs={alertTabs} />} />
             <Route path="/settings/:tab?" element={<Section title="Settings" base="/settings" tabs={settingsTabs} />} />
+            <Route path="/setup" element={<Setup />} />
             {/* Old addresses, kept working for bookmarks and links in issues. */}
             <Route path="/metrics" element={<Moved to="/dashboards/explore" />} />
             <Route path="/alarms" element={<Moved to="/alerts/alarms" />} />

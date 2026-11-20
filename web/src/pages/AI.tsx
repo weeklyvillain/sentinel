@@ -120,7 +120,7 @@ function SettingsCard({ state, onSaved }: { state: AIState; onSaved: () => void 
             <span className="help">
               The fixer container investigates each new error with Claude Code, reading the service's repository, and decides whether it is worth fixing:{" "}
               <strong>fix</strong>, <strong>ignore</strong> (noise) or <strong>investigate</strong> (needs a person). Auto-fix only starts for "fix". It uses the
-              fixer's Claude sign-in and model, set under <Link to="/settings/github">Settings → GitHub → Sentinel's fixer</Link>, so no API key is needed
+              fixer's Claude sign-in and model, set under <Link to="/settings/fixer">Settings → Fixer</Link>, so no API key is needed
               here. If the fixer does not pick an error up within 20 minutes, its issue is filed with the template.
             </span>
             <label className="check" style={{ marginTop: 8 }}>

@@ -36,6 +36,8 @@ type FixerSettings struct {
 	// Effort and AnalyzeEffort are Claude Code's --effort; "" = its default.
 	Effort        string `json:"effort,omitempty"`
 	AnalyzeEffort string `json:"analyze_effort,omitempty"`
+	// Permissions in fix jobs: commands (default) | auto | all.
+	Permissions string `json:"permissions,omitempty"`
 	// Commands Claude may run in fix jobs (prefixes like "go test"), on top
 	// of the fixer's FIXER_EXTRA_TOOLS. nil = never set: DefaultFixerCommands.
 	Commands *[]string `json:"commands,omitempty"`
@@ -44,6 +46,13 @@ type FixerSettings struct {
 // DefaultFixerCommands are allowed until the dashboard sets the list: the
 // Go toolchain is in the fixer image, and these only build and test.
 var DefaultFixerCommands = []string{"go build", "go test", "go vet", "gofmt"}
+
+func (fs FixerSettings) permissions() string {
+	if fs.Permissions == "" {
+		return fixjob.PermCommands
+	}
+	return fs.Permissions
+}
 
 func (fs FixerSettings) commands() []string {
 	if fs.Commands == nil {
@@ -146,6 +155,7 @@ func (s *Server) fixerJobAuth(job *fixjob.Job) {
 	} else {
 		job.Model, job.Effort = fs.Model, fs.Effort
 		job.Commands = fs.commands()
+		job.Permissions = fs.permissions()
 	}
 }
 
@@ -160,6 +170,7 @@ type fixerView struct {
 	Commands      []string `json:"commands"`
 	Effort        string   `json:"effort"`
 	AnalyzeEffort string   `json:"analyze_effort"`
+	Permissions   string   `json:"permissions"`
 	// DefaultCommands is what "reset" goes back to.
 	DefaultCommands []string `json:"default_commands"`
 }
@@ -172,7 +183,7 @@ func (s *Server) fixerView() fixerView {
 	}
 	return fixerView{Mode: s.fixMode(), EnvMode: env, ClaudeKind: fs.ClaudeKind, HasClaude: fs.ClaudeToken != "",
 		Model: fs.Model, AnalyzeModel: fs.AnalyzeModel, Commands: fs.commands(), DefaultCommands: DefaultFixerCommands,
-		Effort: fs.Effort, AnalyzeEffort: fs.AnalyzeEffort}
+		Effort: fs.Effort, AnalyzeEffort: fs.AnalyzeEffort, Permissions: fs.permissions()}
 }
 
 // fixerInput is what the dashboard sends; nil fields stay as they are. An
@@ -187,6 +198,7 @@ type fixerInput struct {
 	Commands      *[]string `json:"commands"`
 	Effort        *string   `json:"effort"`
 	AnalyzeEffort *string   `json:"analyze_effort"`
+	Permissions   *string   `json:"permissions"`
 }
 
 func applyFixerInput(fs FixerSettings, in fixerInput) (FixerSettings, error) {
@@ -236,6 +248,14 @@ func applyFixerInput(fs FixerSettings, in fixerInput) (FixerSettings, error) {
 		}
 		*e.out = v
 	}
+	if in.Permissions != nil {
+		switch p := strings.ToLower(strings.TrimSpace(*in.Permissions)); p {
+		case fixjob.PermCommands, fixjob.PermAuto, fixjob.PermAll:
+			fs.Permissions = p
+		default:
+			return fs, errors.New("permissions must be commands, auto or all")
+		}
+	}
 	if in.Commands != nil {
 		cmds := []string{}
 		seen := map[string]bool{}
@@ -280,6 +300,6 @@ func (s *Server) handlePutAutofix(w http.ResponseWriter, r *http.Request) {
 	if fs.Mode != "" && s.SetFixMode != nil {
 		s.SetFixMode(fs.Mode)
 	}
-	s.log().Info("fixer settings changed", "mode", s.fixMode(), "claude", fs.ClaudeKind, "by", s.login(r))
+	s.log().Info("fixer settings changed", "mode", s.fixMode(), "claude", fs.ClaudeKind, "permissions", fs.permissions(), "by", s.login(r))
 	s.handleAutofix(w, r)
 }

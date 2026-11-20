@@ -71,12 +71,21 @@ function TraceSearch({ range, service, params, set }: { range: string; service: 
   const operation = params.get("operation") ?? "";
   const minMS = params.get("min_ms") ?? "";
   const errors = params.get("errors") === "true";
+  const attrs = params.getAll("attr");
+  const [, setParams] = useSearchParams();
   const [op, setOp] = useState(operation);
   const [min, setMin] = useState(minMS);
+  const [attr, setAttr] = useState("");
+  const setAttrs = (list: string[]) => {
+    const p = new URLSearchParams(params);
+    p.delete("attr");
+    list.forEach((a) => p.append("attr", a));
+    setParams(p, { replace: true });
+  };
   const ops = useAsync(() => api.get<{ operations: OpStats[] }>(`/api/operations${qs({ range, service })}`), [range, service]);
   const list = useAsync(
-    () => api.get<{ traces: TraceSummary[] }>(`/api/traces${qs({ range, service, operation, min_ms: minMS, errors, limit: 100 })}`),
-    [range, service, operation, minMS, errors],
+    () => api.get<{ traces: TraceSummary[] }>(`/api/traces${qs({ range, service, operation, min_ms: minMS, errors, attr: attrs, limit: 100 })}`),
+    [range, service, operation, minMS, errors, attrs.join("&")],
     30000,
   );
   const max = Math.max(1, ...(list.data?.traces ?? []).map((t) => t.duration_us));
@@ -89,6 +98,10 @@ function TraceSearch({ range, service, params, set }: { range: string; service: 
             e.preventDefault();
             set("operation", op);
             set("min_ms", min);
+            if (attr.includes("=")) {
+              setAttrs([...attrs.filter((a) => a.split("=")[0] !== attr.split("=")[0]), attr.trim()]);
+              setAttr("");
+            }
           }}
         >
           <input list="ops" value={op} onChange={(e) => setOp(e.target.value)} placeholder="Operation, e.g. GET /api/cart" style={{ minWidth: 260 }} aria-label="Operation" />
@@ -98,11 +111,32 @@ function TraceSearch({ range, service, params, set }: { range: string; service: 
             ))}
           </datalist>
           <input value={min} onChange={(e) => setMin(e.target.value)} placeholder="min ms" style={{ width: 90 }} aria-label="Minimum duration in ms" inputMode="decimal" />
+          <input
+            className="mono"
+            value={attr}
+            onChange={(e) => setAttr(e.target.value)}
+            placeholder="attribute=value, e.g. session.id=…"
+            style={{ minWidth: 220 }}
+            aria-label="Attribute filter"
+          />
           <label className="small">
             <input type="checkbox" checked={errors} onChange={(e) => set("errors", e.target.checked ? "true" : "")} /> with errors
           </label>
           <button type="submit">Search</button>
         </form>
+        {attrs.length > 0 && (
+          <div className="row" style={{ marginTop: 8 }}>
+            {attrs.map((a) => (
+              <span key={a} className="chip mono">
+                {a}
+                <button onClick={() => setAttrs(attrs.filter((x) => x !== a))} aria-label={`Remove ${a}`}>
+                  ×
+                </button>
+              </span>
+            ))}
+            <span className="small faint">Only traces with a span that has these attributes.</span>
+          </div>
+        )}
       </div>
       <ErrorNote error={list.error} />
       <div className="card flush">
@@ -450,7 +484,14 @@ export function TraceView() {
                         .map(([k, v]) => (
                           <span key={k} style={{ display: "contents" }}>
                             <span className="k">{k}</span>
-                            <span className="v">{v}</span>
+                            <span className="v">
+                              {v}{" "}
+                              {v.length < 200 && (
+                                <Link className="small" to={`/traces${qs({ range: "24h", attr: `${k}=${v}` })}`} title="Traces with this value (last 24 hours)">
+                                  traces
+                                </Link>
+                              )}
+                            </span>
                           </span>
                         ))}
                     </div>

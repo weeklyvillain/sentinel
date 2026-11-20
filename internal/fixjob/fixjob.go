@@ -53,7 +53,42 @@ type Job struct {
 	Commands []string `json:"commands,omitempty"`
 	// Effort is Claude Code's --effort (low … max); empty is its default.
 	Effort string `json:"effort,omitempty"`
+	// Permissions is what Claude may do in a fix job besides reading and
+	// editing files: PermCommands (default), PermAuto or PermAll.
+	Permissions string `json:"permissions,omitempty"`
+	// Related are other repositories the fix may need to change: those of
+	// the other services in the error's traces. Each gets its own pull
+	// request on Branch, and the pull requests link each other.
+	Related []RelatedRepo `json:"related,omitempty"`
 }
+
+// RelatedRepo is another repository a fix job may change.
+type RelatedRepo struct {
+	Repo     string `json:"repo"`    // owner/name
+	Service  string `json:"service"` // the service it belongs to
+	CloneURL string `json:"clone_url"`
+	// Token can push to and open pull requests in this one repository.
+	Token string `json:"token"`
+}
+
+// PullRequest is one pull request a fix opened.
+type PullRequest struct {
+	Repo     string `json:"repo"`
+	Number   int    `json:"number"`
+	URL      string `json:"url"`
+	Diffstat string `json:"diffstat,omitempty"`
+}
+
+// Fix job permission levels.
+const (
+	// PermCommands: only the listed Commands (and FIXER_EXTRA_TOOLS).
+	PermCommands = "commands"
+	// PermAuto: Claude Code's auto mode, which runs what the task needs
+	// and blocks risky actions with a safety check.
+	PermAuto = "auto"
+	// PermAll: everything, no checks (Claude Code's bypassPermissions).
+	PermAll = "all"
+)
 
 // Log line kinds: the fixer's own steps and Claude Code's.
 const (
@@ -163,6 +198,9 @@ type Result struct {
 	// RunID echoes Job.RunID; Usage is what Claude Code used.
 	RunID int64  `json:"run_id,omitempty"`
 	Usage *Usage `json:"usage,omitempty"`
+	// PRs lists every pull request of a fix across repositories (the first
+	// is also PRNumber/PRURL).
+	PRs []PullRequest `json:"prs,omitempty"`
 }
 
 // Hello is what the fixer says about itself when it asks for work.

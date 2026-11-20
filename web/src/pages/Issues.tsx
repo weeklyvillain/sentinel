@@ -309,7 +309,7 @@ function FixBadge({ g }: { g: Group }) {
   const badge = (
     <span className={"badge " + f.cls} title={f.help}>
       🤖 {f.label}
-      {g.fix_pr_number ? ` #${g.fix_pr_number}` : ""}
+      {(g.fix_prs?.length ?? 0) > 1 ? ` · ${g.fix_prs!.length} repos` : g.fix_pr_number ? ` #${g.fix_pr_number}` : ""}
     </span>
   );
   return g.fix_pr_url ? (
@@ -628,7 +628,7 @@ export function IssueDetail() {
         </div>
       )}
       {g.fix_state && (
-        <div className={"notice" + (g.fix_state === "no_pr" ? " warn" : "")} style={{ marginBottom: 16, display: "flex", gap: 10, alignItems: "center" }}>
+        <div className={"notice" + (g.fix_state === "no_pr" ? " warn" : "")} style={{ marginBottom: 16, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <FixBadge g={g} />
           <span className="small">
             {FIX[g.fix_state].help}
@@ -641,10 +641,25 @@ export function IssueDetail() {
               </details>
             )}
           </span>
-          {g.fix_pr_url && (
+          {g.fix_pr_url && (g.fix_prs?.length ?? 0) < 2 && (
             <a className="btn small" href={g.fix_pr_url} target="_blank" rel="noreferrer" style={{ marginLeft: "auto" }}>
               <Icon.github /> Review pull request #{g.fix_pr_number}
             </a>
+          )}
+          {(g.fix_prs?.length ?? 0) > 1 && (
+            <div style={{ flexBasis: "100%" }}>
+              <div className="small muted" style={{ margin: "4px 0 6px" }}>
+                The fix spans {g.fix_prs!.length} repositories. Review and merge them together; it counts as merged when all are.
+              </div>
+              <div className="row">
+                {g.fix_prs!.map((p) => (
+                  <a key={p.url} className="btn small" href={p.url} target="_blank" rel="noreferrer">
+                    <Icon.github /> {p.repo}#{p.number}
+                    <span className={"badge " + (p.merged ? "ok" : p.state === "closed" ? "bad" : "accent")}>{p.merged ? "merged" : p.state === "closed" ? "closed" : "open"}</span>
+                  </a>
+                ))}
+              </div>
+            </div>
           )}
         </div>
       )}

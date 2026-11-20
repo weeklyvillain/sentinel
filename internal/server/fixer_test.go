@@ -345,3 +345,41 @@ func TestFixerModelsAndEffort(t *testing.T) {
 		t.Fatalf("jobs: fix %+v, investigation %+v", fix, inv)
 	}
 }
+
+func TestFixerPermissions(t *testing.T) {
+	h := newHarness(t, AuthConfig{Mode: "none"}, "")
+	job := fixjob.Job{Kind: fixjob.KindFix}
+	h.s.fixerJobAuth(&job)
+	if job.Permissions != fixjob.PermCommands {
+		t.Fatalf("default: %q", job.Permissions)
+	}
+	if resp, _ := h.do(http.MethodPut, "/api/autofix", `{"permissions":"root"}`, true); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad level accepted: %d", resp.StatusCode)
+	}
+	if resp, body := h.do(http.MethodPut, "/api/autofix", `{"permissions":"auto"}`, true); resp.StatusCode != http.StatusOK || !strings.Contains(body, `"permissions":"auto"`) {
+		t.Fatalf("save: %d %s", resp.StatusCode, body)
+	}
+	job, inv := fixjob.Job{Kind: fixjob.KindFix}, fixjob.Job{Kind: fixjob.KindAnalyze}
+	h.s.fixerJobAuth(&job)
+	h.s.fixerJobAuth(&inv)
+	if job.Permissions != fixjob.PermAuto || inv.Permissions != "" {
+		t.Fatalf("fix %q, investigation %q", job.Permissions, inv.Permissions)
+	}
+}
+
+func TestLogMessageFields(t *testing.T) {
+	h := newHarness(t, AuthConfig{Mode: "none"}, "")
+	if resp, body := h.do(http.MethodPut, "/api/logs/message-fields", `{"service":"api","field":"event.text"}`, true); resp.StatusCode != http.StatusOK || !strings.Contains(body, `"api":"event.text"`) {
+		t.Fatalf("set: %d %s", resp.StatusCode, body)
+	}
+	h.do(http.MethodPut, "/api/logs/message-fields", `{"service":"web","field":"msg"}`, true)
+	if _, body := h.do(http.MethodGet, "/api/logs/message-fields", "", false); !strings.Contains(body, `"web":"msg"`) || !strings.Contains(body, `"api":"event.text"`) {
+		t.Fatalf("get: %s", body)
+	}
+	if _, body := h.do(http.MethodPut, "/api/logs/message-fields", `{"service":"api","field":""}`, true); strings.Contains(body, `"api"`) {
+		t.Fatalf("reset: %s", body)
+	}
+	if resp, _ := h.do(http.MethodPut, "/api/logs/message-fields", `{"field":"x"}`, true); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("no service: %d", resp.StatusCode)
+	}
+}

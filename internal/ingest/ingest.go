@@ -59,8 +59,10 @@ type Receiver struct {
 	// Tokens, if non-empty, are the accepted bearer tokens
 	// ("Authorization: Bearer <token>"). Empty disables authentication.
 	Tokens []string
-	Log    *slog.Logger
-	Now    func() time.Time
+	// TokenSource, when set, replaces Tokens (a token can change at runtime).
+	TokenSource func() []string
+	Log         *slog.Logger
+	Now         func() time.Time
 	// SpanSampleRate is the share of traces stored for the trace view (0-1).
 	// Error spans are always stored; request statistics count every span.
 	SpanSampleRate float64
@@ -87,7 +89,11 @@ var errUnsupported = errors.New("unsupported content type")
 
 // authorized checks the bearer token in constant time.
 func (r *Receiver) authorized(req *http.Request) bool {
-	if len(r.Tokens) == 0 {
+	tokens := r.Tokens
+	if r.TokenSource != nil {
+		tokens = r.TokenSource()
+	}
+	if len(tokens) == 0 {
 		return true
 	}
 	h := req.Header.Get("Authorization")
@@ -99,7 +105,7 @@ func (r *Receiver) authorized(req *http.Request) bool {
 		return false
 	}
 	match := 0
-	for _, t := range r.Tokens {
+	for _, t := range tokens {
 		match |= subtle.ConstantTimeCompare([]byte(tok), []byte(t))
 	}
 	return match == 1
@@ -426,12 +432,21 @@ func (r *Receiver) traces(ctx context.Context, body []byte, isJSON bool) error {
 	if err := unmarshal(body, isJSON, &req); err != nil {
 		return err
 	}
+	return r.tracesData(ctx, &req, nil)
+}
+
+// tracesData stores spans and files error spans. override, when set,
+// adjusts each resource (client keys put spans under their own service).
+func (r *Receiver) tracesData(ctx context.Context, req *tracepb.TracesData, override func(*resInfo)) error {
 	seen := map[string]bool{}
 	var batch []Record
 	spanSink, keepSpans := r.Sink.(SpanSink)
 	var spans []store.Span
 	for _, rs := range req.GetResourceSpans() {
 		ri := resourceInfo(rs.GetResource())
+		if override != nil {
+			override(&ri)
+		}
 		r.heartbeat(ctx, seen, ri)
 		for _, ss := range rs.GetScopeSpans() {
 			for _, sp := range ss.GetSpans() {

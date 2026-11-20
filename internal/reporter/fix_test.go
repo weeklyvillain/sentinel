@@ -3,6 +3,7 @@ package reporter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -184,5 +185,79 @@ func TestFixerStaleJobFails(t *testing.T) {
 	h.r.Tick(h.ctx)
 	if g := h.group(); g.FixState != store.FixFailed || g.FixSummary == "" {
 		t.Fatalf("stale: %+v", g)
+	}
+}
+
+// A fix across repositories: the other services in the error's traces bring
+// their repositories into the job; every pull request is recorded, and the
+// fix is merged only when all of them are.
+func TestFixerAcrossRepositories(t *testing.T) {
+	h, fg := fixHarness(t, true)
+	h.r.Cfg.FixMode = FixModeFixer
+	h.r.Router = pushRouter{StaticRouter{Repo: "acme/app", API: fg}}
+	// The failing request came from the frontend, a service with its own repository.
+	trace := fmt.Sprintf("%032x", 1)
+	h.st.InsertSpans(h.ctx, []store.Span{
+		{TraceID: trace, SpanID: "a000000000000001", Service: "web-frontend", Name: "POST /checkout", Kind: "client", Start: h.now, Sampled: true},
+		{TraceID: trace, SpanID: "a000000000000002", ParentID: "a000000000000001", Service: "checkout", Name: "POST /checkout", Kind: "server", Start: h.now, Sampled: true},
+		{TraceID: trace, SpanID: "a000000000000003", ParentID: "a000000000000002", Service: "no-repo-service", Name: "GET /x", Kind: "server", Start: h.now, Sampled: true},
+	})
+	h.st.UpsertServiceConfig(h.ctx, store.ServiceConfig{Name: "web-frontend", Repo: "acme/web"})
+	h.emit(1, "boom %d")
+	h.r.Tick(h.ctx)
+	g := h.group()
+	job, err := h.r.ClaimFixJob(h.ctx)
+	if err != nil || job == nil || len(job.Related) != 1 || job.Related[0].Repo != "acme/web" || job.Related[0].Service != "web-frontend" || job.Related[0].Token == "" {
+		t.Fatalf("job: %v %+v", err, job)
+	}
+	res := fixjob.Result{Attempt: 1, Status: fixjob.StatusPR, PRNumber: 9, PRURL: "https://github.com/acme/app/pull/9", PRs: []fixjob.PullRequest{
+		{Repo: "acme/app", Number: 9, URL: "https://github.com/acme/app/pull/9"},
+		{Repo: "acme/web", Number: 4, URL: "https://github.com/acme/web/pull/4"},
+	}}
+	g, err = h.r.FixJobResult(h.ctx, g.ID, res)
+	if err != nil || len(g.FixPRs) != 2 || g.FixState != store.FixPROpen {
+		t.Fatalf("result: %v %+v", err, g)
+	}
+	c := h.gh.issues[1].comments
+	if last := c[len(c)-1]; !strings.Contains(last, "2 repositories") || !strings.Contains(last, "acme/web#4") {
+		t.Fatalf("comment: %s", last)
+	}
+	// One merged is not enough.
+	fg.prs[1] = []github.PullRef{
+		{Repo: "acme/app", Number: 9, State: "closed", Merged: true, URL: "https://github.com/acme/app/pull/9"},
+		{Repo: "acme/web", Number: 4, State: "open", URL: "https://github.com/acme/web/pull/4"},
+	}
+	h.advance(3 * time.Minute)
+	h.r.Tick(h.ctx)
+	if g := h.group(); g.FixState != store.FixPROpen || !g.FixPRs[0].Merged || g.FixPRs[1].Merged {
+		t.Fatalf("half merged: %+v", g)
+	}
+	fg.prs[1][1].State, fg.prs[1][1].Merged = "closed", true
+	h.advance(3 * time.Minute)
+	h.r.Tick(h.ctx)
+	if g := h.group(); g.FixState != store.FixMerged {
+		t.Fatalf("all merged: %+v", g)
+	}
+}
+
+// A single-repository fix ignores pull requests of other repositories that
+// happen to mention the issue.
+func TestFixerIgnoresOtherRepositoriesPRs(t *testing.T) {
+	h, fg := fixHarness(t, true)
+	h.r.Cfg.FixMode = FixModeFixer
+	h.r.Router = pushRouter{StaticRouter{Repo: "acme/app", API: fg}}
+	h.emit(1, "boom %d")
+	h.r.Tick(h.ctx)
+	g := h.group()
+	h.r.ClaimFixJob(h.ctx)
+	h.r.FixJobResult(h.ctx, g.ID, fixjob.Result{Attempt: 1, Status: fixjob.StatusPR, PRNumber: 9, PRURL: "https://github.com/acme/app/pull/9"})
+	fg.prs[1] = []github.PullRef{
+		{Repo: "acme/app", Number: 9, State: "open", URL: "https://github.com/acme/app/pull/9"},
+		{Repo: "other/repo", Number: 50, State: "closed", Merged: true, URL: "https://github.com/other/repo/pull/50"},
+	}
+	h.advance(3 * time.Minute)
+	h.r.Tick(h.ctx)
+	if g := h.group(); g.FixState != store.FixPROpen || g.FixPRNumber != 9 {
+		t.Fatalf("another repository's merged PR counted: %+v", g)
 	}
 }

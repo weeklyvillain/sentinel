@@ -750,6 +750,25 @@ func (s *Store) SetFixOutcome(ctx context.Context, id int64, state string, prNum
 	return err
 }
 
+// FixPR is one pull request of a fix, with its state as last seen.
+type FixPR struct {
+	Repo   string `json:"repo"`
+	Number int    `json:"number"`
+	URL    string `json:"url"`
+	State  string `json:"state,omitempty"` // open | closed
+	Merged bool   `json:"merged,omitempty"`
+}
+
+// SetFixPRs records the pull requests of a fix (nil clears them).
+func (s *Store) SetFixPRs(ctx context.Context, id int64, prs []FixPR) error {
+	if prs == nil {
+		prs = []FixPR{}
+	}
+	b, _ := json.Marshal(prs)
+	_, err := s.db.ExecContext(ctx, `UPDATE groups SET fix_prs = ? WHERE id = ?`, string(b), id)
+	return err
+}
+
 // StaleFixes lists running fixes started before t (the fixer died).
 func (s *Store) StaleFixes(ctx context.Context, t time.Time) ([]Group, error) {
 	rows, err := s.db.QueryContext(ctx, groupCols+` WHERE fix_state = 'running' AND fix_started_at < ?`, ms(t))

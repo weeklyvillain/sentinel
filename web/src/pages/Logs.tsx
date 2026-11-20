@@ -1,8 +1,10 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, Bucket, LogRecord, qs } from "../api";
 import { bucketKeys, Legend, StackedBars } from "../components/charts";
 import { CopyLink, Empty, ErrorNote, Icon, RangePicker, Switch, useAsync } from "../components/ui";
+import { LogDrawer } from "../components/LogDrawer";
+import { messageOf } from "../logjson";
 import { useServices } from "../shared";
 import { fmtFull, fmtNum, fmtTime, LEVEL_COLORS, levelOf } from "../util";
 
@@ -37,7 +39,9 @@ export default function Logs() {
   const [draft, setDraft] = useState(q);
   useEffect(() => setDraft(q), [q]);
   const [live, setLive] = useState(false);
-  const [expanded, setExpanded] = useState<number | null>(null);
+  // The open line, by id: in live mode new lines push it down the list.
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const fields = useAsync(() => api.get<Record<string, string>>("/api/logs/message-fields"), []);
   const [more, setMore] = useState<LogRecord[]>([]);
   const [next, setNext] = useState<LogsResp["next"]>();
   const [loadingMore, setLoadingMore] = useState(false);
@@ -80,6 +84,15 @@ export default function Logs() {
   const toggleService = (name: string) =>
     update({ service: services.includes(name) ? services.filter((s) => s !== name) : [...services, name] });
   const addAttr = (k: string, v: string) => update({ attr: [...attrs.filter((a) => !a.startsWith(k + "=")), `${k}=${v}`] });
+  const selected = selectedId === null ? -1 : rows.findIndex((r) => r.id === selectedId);
+  const open = selected >= 0 ? rows[selected] : undefined;
+  const setSelected = (i: number | null) => setSelectedId(i === null ? null : (rows[i]?.id ?? null));
+  // A new search or time range closes the drawer.
+  useEffect(() => setSelectedId(null), [key]);
+  const setField = async (service: string, field: string) => {
+    await api.put("/api/logs/message-fields", { service, field });
+    fields.reload();
+  };
 
   return (
     <>
@@ -199,67 +212,25 @@ export default function Logs() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((l) => {
+              {rows.map((l, i) => {
                 const lvl = levelOf(l.severity);
-                const open = expanded === l.id;
+                const m = messageOf(l.body, fields.data?.[l.service]);
                 return (
-                  <Fragment key={l.id}>
-                    <tr className={"clickable" + (open ? " expanded" : "")} onClick={() => setExpanded(open ? null : l.id)}>
-                      <td className="nowrap mono muted" title={fmtFull(l.time)}>
-                        {fmtTime(l.time)}
-                      </td>
-                      <td>
-                        <span className={"lvl " + lvl}>{l.kind === "span" ? "span" : lvl}</span>
-                      </td>
-                      <td className="truncate" style={{ maxWidth: 140 }}>
-                        {l.service}
-                      </td>
-                      <td className="body">{open ? l.body : l.body.length > 300 ? l.body.slice(0, 300) + "…" : l.body}</td>
-                    </tr>
-                    {open && (
-                      <tr className="expanded">
-                        <td colSpan={4}>
-                          <div className="log-detail">
-                            <div className="row" style={{ marginBottom: 10 }}>
-                              <span className="small muted">{fmtFull(l.time)}</span>
-                              {l.severity_text && <span className="badge">{l.severity_text}</span>}
-                              {l.env && <span className="badge">{l.env}</span>}
-                              {l.trace_id && (
-                                <button className="small" onClick={() => update({ trace_id: l.trace_id!, range: "7d", from: null, to: null })}>
-                                  Show trace {l.trace_id.slice(0, 8)}…
-                                </button>
-                              )}
-                              {l.fingerprint && (
-                                <button className="small" onClick={() => update({ fingerprint: l.fingerprint!, range: "7d", from: null, to: null })}>
-                                  Same error
-                                </button>
-                              )}
-                            </div>
-                            <div className="kv">
-                              {Object.entries(l.attrs ?? {})
-                                .sort(([a], [b]) => a.localeCompare(b))
-                                .map(([k, v]) => (
-                                  <Fragment key={k}>
-                                    <span className="k">{k}</span>
-                                    <span className="v">{v}</span>
-                                    <button className="link small" onClick={() => addAttr(k, v)}>
-                                      filter
-                                    </button>
-                                  </Fragment>
-                                ))}
-                              {l.trace_id && (
-                                <>
-                                  <span className="k">trace_id</span>
-                                  <span className="v">{l.trace_id}</span>
-                                  <span />
-                                </>
-                              )}
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
+                  <tr key={l.id} className={"clickable" + (selected === i ? " expanded" : "")} onClick={() => setSelected(i)}>
+                    <td className="nowrap mono muted" title={fmtFull(l.time)}>
+                      {fmtTime(l.time)}
+                    </td>
+                    <td>
+                      <span className={"lvl " + lvl}>{l.kind === "span" ? "span" : lvl}</span>
+                    </td>
+                    <td className="truncate" style={{ maxWidth: 140 }}>
+                      {l.service}
+                    </td>
+                    <td className="body">
+                      {m.json && <span className="json-tag" title="JSON log line">{"{}"}</span>}
+                      {m.text.length > 300 ? m.text.slice(0, 300) + "…" : m.text}
+                    </td>
+                  </tr>
                 );
               })}
             </tbody>
@@ -272,6 +243,23 @@ export default function Logs() {
             {loadingMore ? "Loading…" : "Load older"}
           </button>
         </div>
+      )}
+      {open && (
+        <LogDrawer
+          log={open}
+          field={fields.data?.[open.service]}
+          onClose={() => setSelected(null)}
+          onPrev={selected > 0 ? () => setSelected(selected - 1) : undefined}
+          onNext={selected < rows.length - 1 ? () => setSelected(selected + 1) : undefined}
+          onSetField={(f) => setField(open.service, f)}
+          onFilterAttr={(k, v) => {
+            setSelected(null);
+            addAttr(k, v);
+          }}
+          onSearch={(text) => update({ q: `"${text.replace(/"/g, "")}"` })}
+          onTrace={() => update({ trace_id: open.trace_id!, range: "7d", from: null, to: null })}
+          onSameError={() => update({ fingerprint: open.fingerprint!, range: "7d", from: null, to: null })}
+        />
       )}
       <p className="small faint">
         Search matches words by prefix in messages and attribute values. Use <code>"exact phrase"</code> and <code>-exclude</code>. Groups from{" "}

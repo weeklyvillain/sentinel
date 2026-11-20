@@ -1,7 +1,8 @@
 # Sentinel on its own server, behind Caddy (HTTPS).
 #
-#   cd deploy && cp .env.example .env   # fill it in
+#   cd deploy && echo "SENTINEL_DOMAIN=sentinel.example.com" > .env
 #   docker compose up -d --build
+#   docker compose logs sentinel | grep "setup code"   # then open the site
 #
 # Point DNS for SENTINEL_DOMAIN at this server and open ports 80 and 443.
 name: sentinel
@@ -16,7 +17,6 @@ services:
     environment:
       SENTINEL_DB: /data/sentinel.db
       PUBLIC_URL: https://${SENTINEL_DOMAIN:?set SENTINEL_DOMAIN in .env}
-      INGEST_TOKEN: ${INGEST_TOKEN:?set INGEST_TOKEN in .env}
       GITHUB_APP_PRIVATE_KEY_FILE: /secrets/github-app.pem
       # Sentinel writes the fixer's token here (or FIXER_TOKEN from .env).
       FIXER_TOKEN_FILE: /fixer-auth/token
@@ -33,7 +33,7 @@ services:
       options: { max-size: "20m", max-file: "5" }
 
   # Claude Code for automated fixes and investigations. It idles until you
-  # pick it in the dashboard (Settings → GitHub → Sentinel's fixer, and
+  # pick it in the dashboard (Settings → Fixer, and
   # Settings → AI) and add a Claude sign-in there; nothing to set in .env.
   fixer:
     build:

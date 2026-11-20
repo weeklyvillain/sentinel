@@ -46,6 +46,12 @@ func (s *Server) finishFixerRun(ctx context.Context, res fixjob.Result) {
 		u = store.FixerUsage(*res.Usage)
 	}
 	summary := res.Summary
+	if len(res.PRs) > 1 {
+		summary += "\n\nPull requests:"
+		for _, p := range res.PRs {
+			summary += fmt.Sprintf("\n- %s#%d %s", p.Repo, p.Number, p.URL)
+		}
+	}
 	if a := res.Analysis; a != nil {
 		summary = fmt.Sprintf("Verdict: %s (%s). %s", a.Verdict, a.Severity, a.Title)
 		if a.Reason != "" {
