@@ -104,10 +104,12 @@ type PanelQuery struct {
 	Alias  string `json:"alias"`
 	Hidden bool   `json:"hidden"` // used only by the formula
 	store.MetricQuery
-	// Logs: matching log lines per bucket.
+	// Logs: matching log lines per bucket, or a statistic of a field of them.
 	Q           string `json:"q"`
 	MinSeverity int32  `json:"min_severity"`
-	SplitBy     string `json:"split_by"` // "" | level | service
+	SplitBy     string `json:"split_by"` // "" | level | service | any field
+	LogAgg      string `json:"log_agg"`  // see store.LogMetricAggs; default count
+	Field       string `json:"field"`    // for aggregations other than count/rate
 	// Spans: request statistics of entry spans.
 	Operation string `json:"operation"`
 	Stat      string `json:"stat"` // rate | count | errors | error_rate | avg | p50 | p90 | p95 | p99 | heatmap
@@ -201,48 +203,19 @@ func (s *Server) handlePanelQuery(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"series": out, "bucket_ms": bucket.Milliseconds(), "from": from, "to": to})
 }
 
-// logSeries counts matching log lines per bucket, as one series or split by
-// level or service.
+// logSeries counts matching log lines per bucket (or computes a statistic
+// of a field of them), as one series or split by a field.
 func (s *Server) logSeries(r *http.Request, q PanelQuery, from, to time.Time, bucket time.Duration) ([]store.Series, error) {
 	lq := store.LogQuery{Q: q.Q, From: from, To: to, MinSeverity: q.MinSeverity}
 	if q.Service != "" {
 		lq.Services = []string{q.Service}
 	}
-	by := q.SplitBy
-	if by != "level" && by != "service" {
-		by = "level"
-	}
-	buckets, err := s.Store.LogHistogram(r.Context(), lq, bucket, by)
+	series, err := s.Store.LogMetricSeries(r.Context(), lq, store.LogMetric{Agg: q.LogAgg, Field: q.Field, By: q.SplitBy, Limit: 20}, bucket)
 	if err != nil {
 		return nil, err
 	}
-	keys := map[string]bool{}
-	for _, b := range buckets {
-		for k := range b.Counts {
-			keys[k] = true
-		}
+	if q.SplitBy == "" && len(series) == 1 && (q.LogAgg == "" || q.LogAgg == "count") {
+		series[0].Label = "logs"
 	}
-	mk := func(label string, val func(store.Bucket) float64) store.Series {
-		ser := store.Series{Label: label, Points: make([]store.SeriesPoint, len(buckets))}
-		for i, b := range buckets {
-			v := val(b)
-			ser.Points[i] = store.SeriesPoint{Time: b.Time, Value: &v}
-		}
-		return ser
-	}
-	if q.SplitBy == "" {
-		return []store.Series{mk("logs", func(b store.Bucket) float64 {
-			var n int64
-			for _, c := range b.Counts {
-				n += c
-			}
-			return float64(n)
-		})}, nil
-	}
-	out := []store.Series{}
-	for k := range keys {
-		k := k
-		out = append(out, mk(k, func(b store.Bucket) float64 { return float64(b.Counts[k]) }))
-	}
-	return out, nil
+	return series, nil
 }

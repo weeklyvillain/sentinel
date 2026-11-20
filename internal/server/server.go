@@ -181,6 +181,12 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/logs", s.handleLogs)
 	api("GET /api/logs/histogram", s.handleLogHistogram)
 	api("GET /api/logs/facets", s.handleLogFacets)
+	api("GET /api/logs/metric", s.handleLogMetric)
+	api("GET /api/logs/saved", s.handleListSavedSearches)
+	api("POST /api/logs/saved", s.handleSaveSavedSearch)
+	api("PUT /api/logs/saved/{id}", s.handleSaveSavedSearch)
+	api("DELETE /api/logs/saved/{id}", s.handleDeleteSavedSearch)
+	api("POST /api/logs/saved/{id}/use", s.handleUseSavedSearch)
 	api("GET /api/logs/message-fields", s.handleGetLogFields)
 	api("PUT /api/logs/message-fields", s.handlePutLogField)
 

@@ -28,22 +28,168 @@ func seedLogs(t *testing.T, s *Store, t0 time.Time) {
 	}
 }
 
-func TestFTSQuery(t *testing.T) {
-	cases := map[string]string{
-		`connection refused`:    `"connection"* AND "refused"*`,
-		`"connection refused"`:  `"connection refused"`,
-		`db.ConnError -timeout`: `"db ConnError" NOT "timeout"*`,
-		`it's "bad`:             `"it s" AND "bad"`,
-		`   `:                   ``,
-		`*** "" -`:              ``,
+func TestFTSTerm(t *testing.T) {
+	cases := map[[2]string]string{
+		{"connection", ""}:          `"connection"*`,
+		{"db.ConnError", ""}:        `"db ConnError"`,
+		{"connection refused", "p"}: `"connection refused"`,
+		{"***", ""}:                 ``,
 	}
 	for in, want := range cases {
-		if got, _ := FTSQuery(in); got != want {
-			t.Errorf("FTSQuery(%q) = %q, want %q", in, got, want)
+		if got := ftsTerm(in[0], in[1] == "p"); got != want {
+			t.Errorf("ftsTerm(%q) = %q, want %q", in[0], got, want)
 		}
 	}
-	if m, neg := FTSQuery(`-noise`); !neg || m != `"noise"*` {
-		t.Errorf("negative-only: %q %v", m, neg)
+}
+
+func TestParseLogQueryErrors(t *testing.T) {
+	for _, in := range []string{`(timeout`, `(a (b)`, `level:loud`, `duration_ms>fast`, `severity:high`} {
+		n, err := ParseLogQuery(in)
+		if err == nil {
+			_, _, err = compileLogQuery(n)
+		}
+		if err == nil {
+			t.Errorf("%q: expected an error", in)
+		}
+	}
+	for _, in := range []string{``, `   `, `*** "" -`, `it's "bad`, `http://example.com/x`, `Error: boom`, `timeout)`} {
+		n, err := ParseLogQuery(in)
+		if err == nil {
+			_, _, err = compileLogQuery(n)
+		}
+		if err != nil {
+			t.Errorf("%q: %v", in, err)
+		}
+	}
+}
+
+func TestAdvancedSearch(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	t0 := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	seedLogs(t, s, t0)
+	// JSON lines carry their own fields.
+	if err := s.InsertLogs(ctx, []LogRecord{
+		{Time: t0.Add(31 * time.Minute), Service: "api", Severity: 5, Body: `{"msg":"slow query","duration_ms":900,"ok":true,"db":{"table":"orders"}}`},
+		{Time: t0.Add(32 * time.Minute), Service: "api", Severity: 5, Body: `{"msg":"fast query","duration_ms":12,"ok":false}`},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]int{
+		`service:checkout`:                    15,
+		`-service:checkout`:                   17,
+		`service:check*`:                      15,
+		`level:error`:                         6,
+		`level>=warn`:                         6,
+		`level:debug`:                         2,
+		`level<info`:                          2,
+		`refused OR level:debug`:              8,
+		`(refused OR query) service:api`:      2,
+		`user.id:2`:                           10,
+		`user.id!=2`:                          22,
+		`-user.id:2`:                          22,
+		`has:user.id`:                         30,
+		`-has:user.id`:                        2,
+		`http.route:/orders/*`:                30,
+		`duration_ms>500`:                     1,
+		`duration_ms:<=900`:                   2,
+		`ok:true`:                             1,
+		`db.table:orders`:                     1,
+		`message:slow`:                        1,
+		`connection refused -service:billing`: 3,
+		`NOT refused`:                         26,
+		`-refused`:                            26,
+	}
+	for in, want := range cases {
+		got, err := s.CountLogs(ctx, LogQuery{Q: in})
+		if err != nil {
+			t.Errorf("%q: %v", in, err)
+			continue
+		}
+		if got != int64(want) {
+			t.Errorf("%q: %d matches, want %d", in, got, want)
+		}
+	}
+	n, _ := s.CountLogs(ctx, LogQuery{Levels: []string{"debug", "error"}})
+	if n != 8 {
+		t.Errorf("levels debug+error: %d", n)
+	}
+}
+
+func TestLogMetricSeries(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	t0 := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	var recs []LogRecord
+	for i := 0; i < 10; i++ {
+		svc := "a"
+		if i >= 5 {
+			svc = "b"
+		}
+		recs = append(recs, LogRecord{Time: t0.Add(time.Duration(i) * time.Minute), Service: svc, Severity: 9, Body: "req",
+			Attrs: map[string]string{"duration_ms": fmt.Sprint((i + 1) * 10), "user": fmt.Sprint(i % 3)}})
+	}
+	if err := s.InsertLogs(ctx, recs); err != nil {
+		t.Fatal(err)
+	}
+	q := LogQuery{From: t0, To: t0.Add(10 * time.Minute)}
+	ser, err := s.LogMetricSeries(ctx, q, LogMetric{Agg: "count"}, 10*time.Minute)
+	if err != nil || len(ser) != 1 || *ser[0].Points[0].Value != 10 {
+		t.Fatalf("count: %v %+v", err, ser)
+	}
+	ser, _ = s.LogMetricSeries(ctx, q, LogMetric{Agg: "avg", Field: "duration_ms", By: "service"}, 10*time.Minute)
+	got := map[string]float64{}
+	for _, x := range ser {
+		got[x.Label] = *x.Points[0].Value
+	}
+	if got["a"] != 30 || got["b"] != 80 {
+		t.Errorf("avg by service: %v", got)
+	}
+	ser, _ = s.LogMetricSeries(ctx, q, LogMetric{Agg: "p50", Field: "duration_ms"}, 10*time.Minute)
+	if v := *ser[0].Points[0].Value; v != 55 {
+		t.Errorf("p50: %v", v)
+	}
+	ser, _ = s.LogMetricSeries(ctx, q, LogMetric{Agg: "unique", Field: "user"}, 10*time.Minute)
+	if v := *ser[0].Points[0].Value; v != 3 {
+		t.Errorf("unique: %v", v)
+	}
+	ser, _ = s.LogMetricSeries(ctx, q, LogMetric{Agg: "count", By: "user"}, 5*time.Minute)
+	if len(ser) != 3 || len(ser[0].Points) != 2 {
+		t.Errorf("count by attr: %+v", ser)
+	}
+	ser, _ = s.LogMetricSeries(ctx, LogQuery{Q: "service:a", From: q.From, To: q.To}, LogMetric{Agg: "max", Field: "duration_ms"}, time.Minute)
+	if v := ser[0].Points[9].Value; v != nil {
+		t.Errorf("max: empty buckets should be nil, got %v", *v)
+	}
+	if _, err := s.LogMetricSeries(ctx, q, LogMetric{Agg: "avg"}, time.Minute); err == nil {
+		t.Error("avg without a field should fail")
+	}
+}
+
+func TestSavedSearches(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	now := time.Now()
+	a, err := s.SaveSavedSearch(ctx, SavedSearch{Name: "errors", Params: "level=error"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := s.SaveSavedSearch(ctx, SavedSearch{Name: "slow", Params: "q=duration_ms>500"}, now)
+	s.UseSavedSearch(ctx, b.ID, now)
+	list, _ := s.ListSavedSearches(ctx)
+	if len(list) != 2 || list[0].Name != "slow" || list[0].Uses != 1 {
+		t.Fatalf("list: %+v", list)
+	}
+	a.Name = "all errors"
+	if a, err = s.SaveSavedSearch(ctx, a, now); err != nil || a.Name != "all errors" {
+		t.Fatalf("update: %v %+v", err, a)
+	}
+	s.DeleteSavedSearch(ctx, a.ID)
+	if _, err := s.GetSavedSearch(ctx, a.ID); err != ErrNotFound {
+		t.Errorf("deleted: %v", err)
+	}
+	if err := s.UseSavedSearch(ctx, a.ID, now); err != ErrNotFound {
+		t.Errorf("use deleted: %v", err)
 	}
 }
 

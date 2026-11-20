@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode"
 )
 
 // LogRecord is one stored (redacted) log line or error span.
@@ -56,8 +55,9 @@ func (s *Store) InsertLogs(ctx context.Context, recs []LogRecord) error {
 
 // LogQuery filters logs. Zero values mean "no filter".
 type LogQuery struct {
-	Q           string    // free text (full-text search)
+	Q           string    // search language, see ParseLogQuery
 	Services    []string  // any of
+	Levels      []string  // any of: debug, info, warn, error, fatal
 	MinSeverity int32     // severity_number >=
 	From, To    time.Time // [From, To)
 	TraceID     string    //
@@ -73,81 +73,33 @@ type LogQuery struct {
 	Limit      int
 }
 
-// FTSQuery turns user input into a safe FTS5 query. Words are prefix-matched
-// and ANDed, "quoted phrases" match exactly and -word excludes. It returns the
-// MATCH expression and whether the query is purely negative.
-func FTSQuery(in string) (match string, onlyNegative bool) {
-	var pos, neg []string
-	quote := func(t string) string { return `"` + strings.ReplaceAll(t, `"`, `""`) + `"` }
-	rs := []rune(in)
-	for i := 0; i < len(rs); {
-		for i < len(rs) && unicode.IsSpace(rs[i]) {
-			i++
-		}
-		if i >= len(rs) {
-			break
-		}
-		negate := false
-		if rs[i] == '-' && i+1 < len(rs) && !unicode.IsSpace(rs[i+1]) {
-			negate = true
-			i++
-		}
-		var term string
-		phrase := false
-		if rs[i] == '"' {
-			j := i + 1
-			for j < len(rs) && rs[j] != '"' {
-				j++
-			}
-			term, phrase = string(rs[i+1:min(j, len(rs))]), true
-			i = j + 1
-		} else {
-			j := i
-			for j < len(rs) && !unicode.IsSpace(rs[j]) {
-				j++
-			}
-			term = string(rs[i:j])
-			i = j
-		}
-		// FTS tokenizes on punctuation; keep only token characters so
-		// "db.ConnError" becomes the phrase "db ConnError".
-		cleaned := strings.Join(strings.FieldsFunc(term, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }), " ")
-		if cleaned == "" {
-			continue
-		}
-		expr := quote(cleaned)
-		if !phrase && !strings.Contains(cleaned, " ") {
-			expr += "*"
-		}
-		if negate {
-			neg = append(neg, expr)
-		} else {
-			pos = append(pos, expr)
-		}
-	}
-	if len(pos) == 0 {
-		if len(neg) == 0 {
-			return "", false
-		}
-		return strings.Join(neg, " OR "), true
-	}
-	match = strings.Join(pos, " AND ")
-	for _, n := range neg {
-		match += " NOT " + n
-	}
-	return match, false
-}
-
-func (q LogQuery) where() (string, []any) {
+func (q LogQuery) where() (string, []any, error) {
 	var conds []string
 	var args []any
-	if m, neg := FTSQuery(q.Q); m != "" {
-		op := "IN"
-		if neg {
-			op = "NOT IN"
+	if strings.TrimSpace(q.Q) != "" {
+		n, err := ParseLogQuery(q.Q)
+		if err != nil {
+			return "", nil, err
 		}
-		conds = append(conds, "id "+op+" (SELECT rowid FROM logs_fts WHERE logs_fts MATCH ?)")
-		args = append(args, m)
+		cond, a, err := compileLogQuery(n)
+		if err != nil {
+			return "", nil, err
+		}
+		if cond != "" {
+			conds = append(conds, cond)
+			args = append(args, a...)
+		}
+	}
+	if len(q.Levels) > 0 {
+		var ors []string
+		for _, l := range q.Levels {
+			if lvl, ok := normLevel(l); ok {
+				ors = append(ors, levelCond(lvl))
+			}
+		}
+		if len(ors) > 0 {
+			conds = append(conds, "("+strings.Join(ors, " OR ")+")")
+		}
 	}
 	if len(q.Services) > 0 {
 		conds = append(conds, "service IN ("+placeholders(len(q.Services))+")")
@@ -193,9 +145,9 @@ func (q LogQuery) where() (string, []any) {
 		args = append(args, ms(q.BeforeTime), ms(q.BeforeTime), q.BeforeID)
 	}
 	if len(conds) == 0 {
-		return "", nil
+		return "", nil, nil
 	}
-	return " WHERE " + strings.Join(conds, " AND "), args
+	return " WHERE " + strings.Join(conds, " AND "), args, nil
 }
 
 func placeholders(n int) string {
@@ -207,7 +159,10 @@ func (s *Store) SearchLogs(ctx context.Context, q LogQuery) ([]LogRecord, error)
 	if q.Limit <= 0 || q.Limit > 1000 {
 		q.Limit = 100
 	}
-	where, args := q.where()
+	where, args, err := q.where()
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.rdb.QueryContext(ctx, `SELECT id, ts, service, env, kind, severity, severity_text, body, trace_id, span_id, attrs, fingerprint
 		FROM logs`+where+` ORDER BY ts DESC, id DESC LIMIT ?`, append(args, q.Limit)...)
 	if err != nil {
@@ -251,7 +206,10 @@ func (s *Store) LogHistogram(ctx context.Context, q LogQuery, bucket time.Durati
 		key = "service"
 	}
 	q.BeforeTime = time.Time{}
-	where, args := q.where()
+	where, args, err := q.where()
+	if err != nil {
+		return nil, err
+	}
 	b := bucket.Milliseconds()
 	rows, err := s.rdb.QueryContext(ctx, fmt.Sprintf(`SELECT (ts / %d) * %d AS b, %s AS k, COUNT(*) FROM logs%s GROUP BY b, k ORDER BY b`, b, b, key, where), args...)
 	if err != nil {
@@ -319,9 +277,12 @@ func sortBuckets(bs []Bucket) {
 // CountLogs counts logs matching q.
 func (s *Store) CountLogs(ctx context.Context, q LogQuery) (int64, error) {
 	q.BeforeTime = time.Time{}
-	where, args := q.where()
+	where, args, err := q.where()
+	if err != nil {
+		return 0, err
+	}
 	var n int64
-	err := s.rdb.QueryRowContext(ctx, `SELECT COUNT(*) FROM logs`+where, args...).Scan(&n)
+	err = s.rdb.QueryRowContext(ctx, `SELECT COUNT(*) FROM logs`+where, args...).Scan(&n)
 	return n, err
 }
 

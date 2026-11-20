@@ -26,7 +26,12 @@ export interface PanelQuery {
   // logs
   q?: string;
   min_severity?: number;
-  split_by?: "" | "level" | "service";
+  /** "" | level | service | env | any attribute or JSON field */
+  split_by?: string;
+  /** What to compute from the matching lines (default count). */
+  log_agg?: "count" | "rate" | "unique" | "sum" | "avg" | "min" | "max" | "p50" | "p90" | "p95" | "p99";
+  /** The field for log_agg other than count/rate, e.g. duration_ms. */
+  field?: string;
   // spans (request statistics from traces)
   operation?: string;
   stat?: "rate" | "count" | "errors" | "error_rate" | "avg" | "p50" | "p90" | "p95" | "p99" | "heatmap";
