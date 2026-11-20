@@ -30,6 +30,7 @@ type fixerState struct {
 	jobRepo  string
 	jobIssue int
 	jobSince time.Time
+	jobRun   int64
 	lastErr  string
 	// needsSignIn: the fixer asked for work but neither it nor the
 	// dashboard has a Claude sign-in, so it gets none.
@@ -52,6 +53,7 @@ type FixerStatus struct {
 		Repo  string    `json:"repo"`
 		Issue int       `json:"issue"`
 		Since time.Time `json:"since"`
+		RunID int64     `json:"run_id,omitempty"`
 	} `json:"working,omitempty"`
 	LastError string `json:"last_error,omitempty"`
 }
@@ -74,7 +76,8 @@ func (f *fixerState) snapshot() FixerStatus {
 			Repo  string    `json:"repo"`
 			Issue int       `json:"issue"`
 			Since time.Time `json:"since"`
-		}{f.jobID, f.jobKind, f.jobRepo, f.jobIssue, f.jobSince}
+			RunID int64     `json:"run_id,omitempty"`
+		}{f.jobID, f.jobKind, f.jobRepo, f.jobIssue, f.jobSince, f.jobRun}
 	}
 	return st
 }
@@ -126,10 +129,12 @@ func (s *Server) handleFixerClaim(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	s.fixerJobAuth(job)
+	job.RunID = s.startFixerRun(r.Context(), job, hello.Auth)
 	s.fixer.mu.Lock()
 	s.fixer.jobID, s.fixer.jobKind, s.fixer.jobRepo, s.fixer.jobIssue, s.fixer.jobSince = job.ID, job.Kind, job.Repo, job.IssueNumber, time.Now().UTC()
+	s.fixer.jobRun = job.RunID
 	s.fixer.mu.Unlock()
-	s.fixerJobAuth(job)
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, job)
 }
@@ -152,9 +157,10 @@ func (s *Server) handleFixerResult(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.finishFixerRun(r.Context(), res)
 	s.fixer.mu.Lock()
 	if s.fixer.jobID == id {
-		s.fixer.jobID = 0
+		s.fixer.jobID, s.fixer.jobRun = 0, 0
 	}
 	if res.Status == fixjob.StatusFailed {
 		s.fixer.lastErr = res.Error

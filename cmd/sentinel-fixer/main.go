@@ -231,36 +231,39 @@ func (f *fixer) report(ctx context.Context, id int64, res fixjob.Result) error {
 // work runs one job and never returns an error: failures become a result.
 func (f *fixer) work(ctx context.Context, job *fixjob.Job) fixjob.Result {
 	log := f.log.With("job", job.ID, "kind", job.Kind, "repo", job.Repo, "issue", job.IssueNumber, "attempt", job.Attempt)
+	rl := f.startRunLog(job)
 	var res fixjob.Result
 	var err error
 	if job.Kind == fixjob.KindAnalyze {
 		log.Info("investigating")
-		res, err = f.analyze(ctx, job, log)
+		res, err = f.analyze(ctx, job, log, rl)
 	} else {
 		log.Info("fixing")
-		res, err = f.fix(ctx, job, log)
+		res, err = f.fix(ctx, job, log, rl)
 	}
-	res.Attempt, res.AnalysisID = job.Attempt, job.AnalysisID
 	if err != nil {
 		msg := err.Error()
-		if job.Token != "" {
-			msg = strings.ReplaceAll(msg, job.Token, "[REDACTED]")
-		}
-		if job.Claude != nil && job.Claude.Token != "" {
-			msg = strings.ReplaceAll(msg, job.Claude.Token, "[REDACTED]")
+		for _, s := range rl.secrets {
+			msg = strings.ReplaceAll(msg, s, "[REDACTED]")
 		}
 		log.Warn("job failed", "err", msg)
-		return fixjob.Result{Attempt: job.Attempt, AnalysisID: job.AnalysisID, Status: fixjob.StatusFailed, Error: msg}
+		rl.add(fixjob.LogError, msg)
+		res = fixjob.Result{Status: fixjob.StatusFailed, Error: msg}
+	} else {
+		log.Info("done", "status", res.Status, "pr", res.PRURL)
+		rl.step("Done: %s", res.Status)
 	}
-	log.Info("done", "status", res.Status, "pr", res.PRURL)
+	rl.close()
+	res.Attempt, res.AnalysisID, res.RunID, res.Usage = job.Attempt, job.AnalysisID, job.RunID, rl.result()
 	return res
 }
 
-func (f *fixer) fix(ctx context.Context, job *fixjob.Job, log *slog.Logger) (fixjob.Result, error) {
+func (f *fixer) fix(ctx context.Context, job *fixjob.Job, log *slog.Logger, rl *runLog) (fixjob.Result, error) {
 	dir := filepath.Join(f.cfg.workdir, fmt.Sprintf("job-%d-%d", job.ID, job.Attempt))
 	os.RemoveAll(dir)
 	defer os.RemoveAll(dir)
 	g := &gitRunner{token: job.Token}
+	rl.step("Cloning %s to fix #%d (attempt %d)", job.Repo, job.IssueNumber, job.Attempt)
 	if _, err := g.run(ctx, "", "clone", "--depth", "50", "--no-tags", job.CloneURL, dir); err != nil {
 		return fixjob.Result{}, fmt.Errorf("clone: %w", err)
 	}
@@ -274,7 +277,7 @@ func (f *fixer) fix(ctx context.Context, job *fixjob.Job, log *slog.Logger) (fix
 		return fixjob.Result{}, err
 	}
 
-	out, err := f.runClaude(ctx, job, dir, prompt(job), f.cfg.tools, f.cfg.maxTurns, f.cfg.model)
+	out, err := f.runClaude(ctx, job, rl, dir, prompt(job), f.cfg.tools, f.cfg.maxTurns, f.cfg.model)
 	if err != nil {
 		return fixjob.Result{}, err
 	}
@@ -288,9 +291,12 @@ func (f *fixer) fix(ctx context.Context, job *fixjob.Job, log *slog.Logger) (fix
 		if verdict.Fixed {
 			summary = "The agent said it fixed the error but changed no files.\n\n" + summary
 		}
+		rl.step("No fix: %s", clip(summary, 600))
 		return fixjob.Result{Status: fixjob.StatusNoFix, Summary: summary}, nil
 	}
+	rl.step("Changed files:\n%s", strings.TrimRight(status, "\n"))
 	if strings.Contains(status, ".github/") {
+		rl.step("Not pushing: the change touches .github/")
 		return fixjob.Result{Status: fixjob.StatusNoFix, Summary: "The proposed change touched .github/ (workflows), which the fixer never pushes.\n\n" + verdict.Summary}, nil
 	}
 	title := verdict.Title
@@ -310,8 +316,10 @@ func (f *fixer) fix(ctx context.Context, job *fixjob.Job, log *slog.Logger) (fix
 	stat, _ := g.run(ctx, dir, "diff", "--stat", "HEAD~1", "HEAD")
 	stat = strings.TrimSpace(stat)
 	if job.DryRun {
+		rl.step("Dry run: not pushing %s", job.Branch)
 		return fixjob.Result{Status: fixjob.StatusDryRun, Summary: verdict.Summary, Diffstat: stat}, nil
 	}
+	rl.step("Pushing %s", job.Branch)
 	if _, err := g.run(ctx, dir, "push", "origin", job.Branch); err != nil {
 		return fixjob.Result{}, fmt.Errorf("push: %w", err)
 	}
@@ -322,6 +330,7 @@ func (f *fixer) fix(ctx context.Context, job *fixjob.Job, log *slog.Logger) (fix
 		return fixjob.Result{}, fmt.Errorf("open pull request: %w", err)
 	}
 	log.Info("pull request opened", "url", url)
+	rl.step("Opened %s", url)
 	return fixjob.Result{Status: fixjob.StatusPR, PRNumber: num, PRURL: url, Summary: verdict.Summary, Diffstat: stat}, nil
 }
 
@@ -363,42 +372,69 @@ func (f *fixer) claudeEnv(job *fixjob.Job) []string {
 	return append(env, job.Claude.Env())
 }
 
-func (f *fixer) runClaude(ctx context.Context, job *fixjob.Job, dir, p, tools string, maxTurns int, model string) (string, error) {
+// runClaude runs Claude Code headless and returns its final reply. Its
+// stream (messages and tool calls) goes to the run log, its usage to rl.
+func (f *fixer) runClaude(ctx context.Context, job *fixjob.Job, rl *runLog, dir, p, tools string, maxTurns int, model string) (string, error) {
 	env := f.claudeEnv(job)
 	if job.Model != "" {
 		model = job.Model
 	}
 	ctx, cancel := context.WithTimeout(ctx, f.cfg.timeout)
 	defer cancel()
-	args := []string{"-p", p, "--output-format", "json", "--max-turns", strconv.Itoa(maxTurns), "--allowedTools", tools}
+	args := []string{"-p", p, "--output-format", "stream-json", "--verbose", "--max-turns", strconv.Itoa(maxTurns), "--allowedTools", tools}
 	if model != "" {
 		args = append(args, "--model", model)
 	}
+	shown := model
+	if shown == "" {
+		shown = "default model"
+	}
+	rl.step("Running Claude Code (%s, at most %d turns, %s)", shown, maxTurns, f.cfg.timeout)
 	cmd := exec.CommandContext(ctx, f.cfg.claude, args...)
 	cmd.Dir = dir
 	cmd.Env = env
 	if err := asAgent(cmd, dir); err != nil {
 		return "", fmt.Errorf("handing the checkout to the agent user: %w", err)
 	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
-	var res struct {
-		Result  string `json:"result"`
-		IsError bool   `json:"is_error"`
-		Subtype string `json:"subtype"`
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", err
 	}
-	if jerr := json.Unmarshal(stdout.Bytes(), &res); jerr != nil {
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("claude: %w", err)
+	}
+	var lastOut tailBuffer
+	res, rerr := readStream(io.TeeReader(stdout, &lastOut), rl)
+	err = cmd.Wait()
+	if !res.found {
 		if err == nil {
-			err = jerr
+			err = rerr
 		}
-		return "", fmt.Errorf("claude: %w: %s", err, tail(stderr.String()+stdout.String(), 800))
+		if err == nil {
+			err = errors.New("no result message")
+		}
+		return "", fmt.Errorf("claude: %w: %s", err, tail(stderr.String()+lastOut.String(), 800))
 	}
-	if res.IsError && res.Result == "" {
-		return "", fmt.Errorf("claude ended with %s: %s", res.Subtype, tail(stderr.String(), 800))
+	if res.isError && res.result == "" {
+		return "", fmt.Errorf("claude ended with %s: %s", res.subtype, tail(stderr.String(), 800))
 	}
-	return res.Result, nil
+	return res.result, nil
 }
+
+// tailBuffer keeps the last few KB written to it, for error messages.
+type tailBuffer struct{ b []byte }
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.b = append(t.b, p...)
+	if len(t.b) > 4096 {
+		t.b = t.b[len(t.b)-4096:]
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) String() string { return string(t.b) }
 
 type verdict struct {
 	Fixed   bool   `json:"fixed"`

@@ -126,6 +126,13 @@ accept the new permissions on each installation. For each job:
 
 Settings → GitHub shows whether the fixer is connected, how it signs in and
 what it is working on; it gets no work while it has no Claude sign-in.
+**Issues → Fixer** lists every run (fixes and investigations) with its
+result, model, turns, tokens and the cost Claude Code reports (on a
+subscription that is the API-equivalent, not a bill), plus totals for the
+last day, week and month. A run's page shows its log as it works: the
+fixer's steps, Claude's messages and each tool call with its result, with
+the repository and Claude tokens redacted. Logs are kept for 30 days, the
+runs for a year.
 `FIXER_TIMEOUT` (30m) and `FIXER_MAX_TURNS` (60) tune a run.
 
 ### Investigations: is it worth fixing?

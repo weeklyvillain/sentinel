@@ -40,8 +40,18 @@ func TestMain(m *testing.M) {
 			os.WriteFile("calc.go", []byte("package calc\n\nfunc Div(a, b int) int {\n\tif b == 0 {\n\t\treturn 0\n\t}\n\treturn a / b\n}\n"), 0o644)
 			text = "Fixed.\nSENTINEL_RESULT: {\"fixed\": true, \"title\": \"Guard division by zero\", \"summary\": \"Div divided by zero for empty carts.\"}"
 		}
-		out, _ := json.Marshal(map[string]any{"type": "result", "subtype": "success", "is_error": false, "result": text})
-		os.Stdout.Write(out)
+		enc := json.NewEncoder(os.Stdout)
+		enc.Encode(map[string]any{"type": "system", "subtype": "init", "model": "claude-test-1"})
+		enc.Encode(map[string]any{"type": "assistant", "message": map[string]any{"content": []any{
+			map[string]any{"type": "text", "text": "Reading the code."},
+			map[string]any{"type": "tool_use", "name": "Read", "input": map[string]any{"file_path": "calc.go"}},
+		}}})
+		enc.Encode(map[string]any{"type": "user", "message": map[string]any{"content": []any{
+			map[string]any{"type": "tool_result", "content": []any{map[string]any{"type": "text", "text": "package calc"}}},
+		}}})
+		enc.Encode(map[string]any{"type": "result", "subtype": "success", "is_error": false, "result": text,
+			"num_turns": 3, "duration_ms": 1200, "total_cost_usd": 0.05,
+			"usage": map[string]any{"input_tokens": 10, "output_tokens": 200, "cache_read_input_tokens": 3000, "cache_creation_input_tokens": 400}})
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
@@ -75,6 +85,7 @@ type fakeSentinel struct {
 	mu      sync.Mutex
 	job     *fixjob.Job
 	results []fixjob.Result
+	log     []fixjob.LogLine
 }
 
 func newFixer(t *testing.T, mode string, sentinel string) *fixer {
@@ -100,7 +111,7 @@ func TestFixerOpensPullRequest(t *testing.T) {
 	defer gh.Close()
 
 	fs := &fakeSentinel{job: &fixjob.Job{ID: 7, Attempt: 1, Repo: "acme/app", IssueNumber: 12, Title: "runtime error: integer divide by zero",
-		Brief: "panic in Div", Branch: "sentinel-fix-12-1", CloneURL: bare, APIURL: gh.URL, Token: "repo-token"}}
+		Brief: "panic in Div", Branch: "sentinel-fix-12-1", CloneURL: bare, APIURL: gh.URL, Token: "repo-token", RunID: 99}}
 	sentinel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer secret-fixer-token" {
 			http.Error(w, "no", http.StatusUnauthorized)
@@ -116,6 +127,10 @@ func TestFixerOpensPullRequest(t *testing.T) {
 			}
 			json.NewEncoder(w).Encode(fs.job)
 			fs.job = nil
+		case "/fixer/runs/99/log":
+			var b fixjob.LogBatch
+			json.NewDecoder(r.Body).Decode(&b)
+			fs.log = append(fs.log, b.Lines...)
 		case "/fixer/jobs/7/result":
 			var res fixjob.Result
 			json.NewDecoder(r.Body).Decode(&res)
@@ -147,6 +162,23 @@ func TestFixerOpensPullRequest(t *testing.T) {
 	res := fs.results[0]
 	if res.Status != fixjob.StatusPR || res.PRNumber != 42 || res.Attempt != 1 || !strings.Contains(res.Diffstat, "calc.go") {
 		t.Fatalf("result: %+v", res)
+	}
+	// The run's usage and log reach Sentinel.
+	if u := res.Usage; res.RunID != 99 || u == nil || u.Model != "claude-test-1" || u.Turns != 3 || u.OutputTokens != 200 || u.CacheReadTokens != 3000 || u.CostUSD != 0.05 {
+		t.Fatalf("usage: run %d %+v", res.RunID, res.Usage)
+	}
+	var kinds []string
+	for _, l := range fs.log {
+		kinds = append(kinds, l.Kind+": "+strings.SplitN(l.Text, "\n", 2)[0])
+	}
+	joined := strings.Join(kinds, "\n")
+	for _, want := range []string{"step: Cloning acme/app", "step: Claude Code started (model claude-test-1)", "text: Reading the code.", "tool: Read calc.go", "tool_result: package calc", "step: Pushing sentinel-fix-12-1", "step: Opened https://github.com/acme/app/pull/42"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("log has no %q:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "repo-token") {
+		t.Fatalf("log leaks the repository token:\n%s", joined)
 	}
 	if prBody["head"] != "sentinel-fix-12-1" || prBody["base"] != "main" || prBody["title"] != "Guard division by zero" ||
 		!strings.Contains(prBody["body"].(string), "Fixes #12") {
