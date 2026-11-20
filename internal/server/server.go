@@ -95,6 +95,7 @@ func (s *Server) Handler() http.Handler {
 	api("PUT /api/services/{name}", s.handleSaveService)
 	api("DELETE /api/services/{name}", s.handleDeleteService)
 	api("PATCH /api/services/{name}", s.handleServiceFlags)
+	api("GET /api/status", s.handleStatus)
 	api("GET /api/ai", s.handleGetAI)
 	api("PUT /api/ai", s.handlePutAI)
 	api("POST /api/ai/test", s.handleTestAI)

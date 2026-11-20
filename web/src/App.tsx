@@ -1,21 +1,23 @@
-import { createContext, useContext, useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
-import { api, Alarm, Analysis, Check, Me } from "./api";
+import { api, Me } from "./api";
 import { Icon, Loading, Logo, Moved, Section, SectionTab, useAsync } from "./components/ui";
-import Overview from "./pages/Overview";
-import Logs from "./pages/Logs";
-import Issues, { IssueDetail } from "./pages/Issues";
-import Metrics from "./pages/Metrics";
-import Services from "./pages/Services";
-import Alarms from "./pages/Alarms";
-import Webhooks from "./pages/Webhooks";
-import GitHub from "./pages/GitHub";
-import Uptime from "./pages/Uptime";
-import AI from "./pages/AI";
-import Dashboards, { DashboardView } from "./pages/Dashboards";
+import { MeCtx, SharedData, useMe, useStatus } from "./shared";
 
-const MeCtx = createContext<Me | undefined>(undefined);
-export const useMe = () => useContext(MeCtx)!;
+// Each page is its own chunk, loaded the first time it is opened.
+const Overview = lazy(() => import("./pages/Overview"));
+const Logs = lazy(() => import("./pages/Logs"));
+const Issues = lazy(() => import("./pages/Issues"));
+const IssueDetail = lazy(() => import("./pages/Issues").then((m) => ({ default: m.IssueDetail })));
+const Metrics = lazy(() => import("./pages/Metrics"));
+const Services = lazy(() => import("./pages/Services"));
+const Alarms = lazy(() => import("./pages/Alarms"));
+const Webhooks = lazy(() => import("./pages/Webhooks"));
+const GitHub = lazy(() => import("./pages/GitHub"));
+const Uptime = lazy(() => import("./pages/Uptime"));
+const AI = lazy(() => import("./pages/AI"));
+const Dashboards = lazy(() => import("./pages/Dashboards"));
+const DashboardView = lazy(() => import("./pages/Dashboards").then((m) => ({ default: m.DashboardView })));
 
 export default function App() {
   const me = useAsync(() => api.get<Me>("/api/me"), []);
@@ -59,21 +61,30 @@ function Login({ me }: { me: Me }) {
 }
 
 function Shell() {
+  return (
+    <SharedData>
+      <ShellBody />
+    </SharedData>
+  );
+}
+
+function ShellBody() {
   const me = useMe();
-  const alarms = useAsync(() => api.get<Alarm[]>("/api/alarms"), [], 30000);
-  const firing = (alarms.data ?? []).filter((a) => a.enabled && a.state === "firing").length;
-  const checks = useAsync(() => api.get<Check[]>("/api/checks"), [], 30000);
-  const checksDown = (checks.data ?? []).filter((c) => c.enabled && c.state === "down").length;
-  const analyses = useAsync(() => api.get<Analysis[]>("/api/analyses"), [], 15000);
-  const analyzing = (analyses.data ?? []).filter((a) => a.status === "queued" || a.status === "running").length;
+  const status = useStatus().data;
+  const firing = status?.firing_alarms.length ?? 0;
+  const checksDown = status?.checks.down.length ?? 0;
+  const analyzing = status?.analyzing ?? 0;
   const nav = [
     { to: "/", label: "Overview", icon: Icon.overview, end: true },
     { to: "/logs", label: "Logs", icon: Icon.logs },
     { to: "/issues", label: "Issues", icon: Icon.issues, count: analyzing },
     { to: "/dashboards", label: "Dashboards", icon: Icon.dashboards },
-    { to: "/metrics", label: "Metrics", icon: Icon.metrics },
     { to: "/alerts", label: "Alerts", icon: Icon.alarms, count: firing + checksDown },
     { to: "/settings", label: "Settings", icon: Icon.settings },
+  ];
+  const dashTabs: SectionTab[] = [
+    { path: "", label: "Dashboards", element: <Dashboards /> },
+    { path: "explore", label: "Explore metrics", element: <Metrics /> },
   ];
   const alertTabs: SectionTab[] = [
     { path: "alarms", label: "Alarms", element: <Alarms />, count: firing },
@@ -117,25 +128,28 @@ function Shell() {
         </div>
       </aside>
       <main className="main">
-        <Routes>
-          <Route path="/" element={<Overview />} />
-          <Route path="/logs" element={<Logs />} />
-          <Route path="/issues" element={<Issues />} />
-          <Route path="/issues/:id" element={<IssueDetail />} />
-          <Route path="/dashboards" element={<Dashboards />} />
-          <Route path="/dashboards/:id" element={<DashboardView />} />
-          <Route path="/metrics" element={<Metrics />} />
-          <Route path="/alerts/:tab?" element={<Section title="Alerts" base="/alerts" tabs={alertTabs} />} />
-          <Route path="/settings/:tab?" element={<Section title="Settings" base="/settings" tabs={settingsTabs} />} />
-          {/* Old addresses, kept working for bookmarks and links in issues. */}
-          <Route path="/alarms" element={<Moved to="/alerts/alarms" />} />
-          <Route path="/uptime" element={<Moved to="/alerts/uptime" />} />
-          <Route path="/services" element={<Moved to="/settings/services" />} />
-          <Route path="/github" element={<Moved to="/settings/github" />} />
-          <Route path="/webhooks" element={<Moved to="/settings/webhooks" />} />
-          <Route path="/ai" element={<Moved to="/settings/ai" />} />
-          <Route path="*" element={<div className="empty">Page not found</div>} />
-        </Routes>
+        <Suspense fallback={<Loading />}>
+          <Routes>
+            <Route path="/" element={<Overview />} />
+            <Route path="/logs" element={<Logs />} />
+            <Route path="/issues" element={<Issues />} />
+            <Route path="/issues/:id" element={<IssueDetail />} />
+            <Route path="/dashboards" element={<Section title="Dashboards" base="/dashboards" tab="" tabs={dashTabs} />} />
+            <Route path="/dashboards/explore" element={<Section title="Dashboards" base="/dashboards" tab="explore" tabs={dashTabs} />} />
+            <Route path="/dashboards/:id" element={<DashboardView />} />
+            <Route path="/alerts/:tab?" element={<Section title="Alerts" base="/alerts" tabs={alertTabs} />} />
+            <Route path="/settings/:tab?" element={<Section title="Settings" base="/settings" tabs={settingsTabs} />} />
+            {/* Old addresses, kept working for bookmarks and links in issues. */}
+            <Route path="/metrics" element={<Moved to="/dashboards/explore" />} />
+            <Route path="/alarms" element={<Moved to="/alerts/alarms" />} />
+            <Route path="/uptime" element={<Moved to="/alerts/uptime" />} />
+            <Route path="/services" element={<Moved to="/settings/services" />} />
+            <Route path="/github" element={<Moved to="/settings/github" />} />
+            <Route path="/webhooks" element={<Moved to="/settings/webhooks" />} />
+            <Route path="/ai" element={<Moved to="/settings/ai" />} />
+            <Route path="*" element={<div className="empty">Page not found</div>} />
+          </Routes>
+        </Suspense>
       </main>
     </div>
   );

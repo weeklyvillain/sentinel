@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { AIModel, AIState, AITestResult, AISettings, Analysis, api } from "../api";
-import { Empty, ErrorNote, Loading, useAsync, useToast } from "../components/ui";
+import { AIModel, AIPull, AIState, AITestResult, AISettings, Analysis, api } from "../api";
+import { Empty, ErrorNote, Loading, useAsync, useToast, useAction } from "../components/ui";
 import { ago, fmtFull } from "../util";
 
 // Small models that run on a CPU-only server. Sizes are the download.
@@ -28,8 +28,7 @@ export default function AI() {
     <>
       <div className="page-head">
         <span className="sub">
-          Before an error group becomes a GitHub issue, a model writes its title and analysis. Jobs run one at a time in the background; an
-          issue is filed when its analysis is done. If it fails, the issue uses the built-in template. Jobs are listed under{" "}
+          A model writes each issue's title and analysis; if it fails, a built-in template is used. Jobs are listed under{" "}
           <Link to="/issues?tab=queue">Issues → AI queue</Link>.
         </span>
       </div>
@@ -193,6 +192,7 @@ function TestResult({ r }: { r: AITestResult }) {
 
 function Models({ baseURL, current, onPick, pull: initialPull }: { baseURL: string; current: string; onPick: (m: string) => void; pull?: AIState["pull"] }) {
   const toast = useToast();
+  const run = useAction();
   const models = useAsync(() => api.get<AIModel[]>(`/api/ai/models?base_url=${encodeURIComponent(baseURL)}`), [baseURL]);
   const [pull, setPull] = useState(initialPull);
   const [name, setName] = useState("qwen2.5:1.5b");
@@ -213,11 +213,8 @@ function Models({ baseURL, current, onPick, pull: initialPull }: { baseURL: stri
   }, [pulling]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const start = async (m: string) => {
-    try {
-      setPull(await api.post("/api/ai/pull", { model: m, base_url: baseURL }));
-    } catch (e) {
-      toast((e as Error).message, true);
-    }
+    const p = await run(() => api.post<AIPull>("/api/ai/pull", { model: m, base_url: baseURL }));
+    if (p) setPull(p);
   };
   const pct = pull && pull.total ? Math.round((pull.completed / pull.total) * 100) : 0;
 
@@ -296,7 +293,7 @@ function StatusBadge({ s }: { s: Analysis["status"] }) {
 }
 
 export function Queue() {
-  const toast = useToast();
+  const run = useAction();
   const list = useAsync(() => api.get<Analysis[]>("/api/analyses"), [], 3000);
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -304,13 +301,8 @@ export function Queue() {
     return () => clearInterval(t);
   }, []);
   const retry = async (a: Analysis) => {
-    try {
-      await api.post(`/api/analyses/${a.id}/retry`);
-      toast("Queued again");
-      list.reload();
-    } catch (e) {
-      toast((e as Error).message, true);
-    }
+    await run(() => api.post(`/api/analyses/${a.id}/retry`), "Queued again");
+    list.reload();
   };
   const waiting = (list.data ?? []).filter((a) => a.status === "queued" || a.status === "running").length;
   let pos = 0;

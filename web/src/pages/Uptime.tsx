@@ -1,9 +1,10 @@
 import { Fragment, useState } from "react";
-import { api, Bucket, Check, CheckResult, CheckStats, Service } from "../api";
+import { api, Bucket, Check, CheckResult, CheckStats } from "../api";
 import { SeriesChart, StackedBars } from "../components/charts";
-import { Empty, ErrorNote, Loading, Modal, RangePicker, Switch, useAsync, useToast } from "../components/ui";
-import { ago, fmtDuration, fmtFull, fmtNum, serviceUp } from "../util";
-import { useMe } from "../App";
+import { Link } from "react-router-dom";
+import { Empty, ErrorNote, Loading, Modal, RangePicker, Switch, useAction, useAsync, useToast } from "../components/ui";
+import { useServices } from "../shared";
+import { ago, fmtDuration, fmtFull, fmtNum } from "../util";
 
 function StateBadge({ c }: { c: Check }) {
   if (!c.enabled) return <span className="badge">paused</span>;
@@ -29,26 +30,24 @@ function pct(n?: number) {
 
 export default function Uptime() {
   const toast = useToast();
+  const act = useAction();
   const checks = useAsync(() => api.get<Check[]>("/api/checks"), [], 10000);
   const [editing, setEditing] = useState<Partial<Check> | null>(null);
   const [open, setOpen] = useState<number | null>(null);
 
   const run = async (c: Check) => {
-    try {
-      const r = await api.post<CheckResult>(`/api/checks/${c.id}/run`);
-      toast(r.ok ? `${c.name}: HTTP ${r.status} in ${r.latency_ms}ms` : `${c.name}: ${r.error}`, !r.ok);
-      checks.reload();
-    } catch (e) {
-      toast((e as Error).message, true);
-    }
+    const r = await act(() => api.post<CheckResult>(`/api/checks/${c.id}/run`));
+    if (!r) return;
+    toast(r.ok ? `${c.name}: HTTP ${r.status} in ${r.latency_ms}ms` : `${c.name}: ${r.error}`, !r.ok);
+    checks.reload();
   };
   const toggle = async (c: Check, enabled: boolean) => {
-    await api.put(`/api/checks/${c.id}`, { ...c, enabled });
+    await act(() => api.put(`/api/checks/${c.id}`, { ...c, enabled }));
     checks.reload();
   };
   const remove = async (c: Check) => {
     if (!confirm(`Delete uptime check "${c.name}" and its history?`)) return;
-    await api.del(`/api/checks/${c.id}`);
+    await act(() => api.del(`/api/checks/${c.id}`), `Deleted ${c.name}`);
     checks.reload();
   };
   const down = (checks.data ?? []).filter((c) => c.enabled && c.state === "down").length;
@@ -56,7 +55,7 @@ export default function Uptime() {
   return (
     <>
       <div className="page-head">
-        <span className="sub">HTTP checks run from the Sentinel server, so they keep working when an app server is down.</span>
+        <span className="sub">HTTP checks run from the Sentinel server, so they still work when an app server is down.</span>
         <div className="actions">
           <button className="primary" onClick={() => setEditing({})}>
             + New check
@@ -137,10 +136,10 @@ export default function Uptime() {
         )}
       </div>
       <p className="small faint">
-        A check is marked down after its configured number of consecutive failures; that files (or reopens) a GitHub issue and sends{" "}
-        <code>check.down</code> to subscribed webhooks. When it passes again the issue is closed with the outage length.
+        After its set number of consecutive failures a check is down: Sentinel files (or reopens) an issue and sends <code>check.down</code>. To be
+        alerted when a service stops sending telemetry, switch on <strong>Watch</strong> for it under{" "}
+        <Link to="/settings/services">Settings → Services</Link>.
       </p>
-      <WatchedServices />
       {editing && (
         <CheckForm
           initial={editing}
@@ -239,7 +238,7 @@ function CheckForm(props: { initial: Partial<Check>; onClose: () => void; onSave
     ...props.initial,
   });
   const [err, setErr] = useState<string>();
-  const svcs = useAsync(() => api.get<Service[]>("/api/services"), []);
+  const svcs = useServices();
   const set = (p: Partial<Check>) => setC((x) => ({ ...x, ...p }));
   const save = async () => {
     setErr(undefined);
@@ -334,99 +333,3 @@ function CheckForm(props: { initial: Partial<Check>; onClose: () => void; onSave
 
 // Services watched for silence: one that sends nothing for DOWN_AFTER is
 // flagged down. Opt-in, because plenty of senders are quiet for minutes.
-function WatchedServices() {
-  const toast = useToast();
-  const me = useMe();
-  const svcs = useAsync(() => api.get<Service[]>("/api/services"), [], 15000);
-  const [adding, setAdding] = useState("");
-
-  const setWatch = async (name: string, watch: boolean) => {
-    try {
-      await api.patch(`/api/services/${encodeURIComponent(name)}`, { watch });
-      toast(watch ? `Watching ${name}` : `Stopped watching ${name}`);
-      setAdding("");
-      svcs.reload();
-    } catch (e) {
-      toast((e as Error).message, true);
-    }
-  };
-  const all = svcs.data ?? [];
-  const watched = all.filter((s) => s.watch);
-  const others = all.filter((s) => !s.watch);
-  const after = me.info.down_after;
-
-  return (
-    <>
-      <div className="page-head" style={{ marginTop: 24 }}>
-        <h2 style={{ margin: 0 }}>Watched services</h2>
-        <span className="sub">
-          A watched service that sends no logs, traces or metrics for {after} is flagged down: Sentinel files an issue and sends{" "}
-          <code>service.down</code>. Other services are never flagged for being quiet.
-        </span>
-        <div className="actions">
-          <select value={adding} onChange={(e) => setAdding(e.target.value)} disabled={others.length === 0} aria-label="Service to watch">
-            <option value="">{others.length ? "Choose a service…" : "All services are watched"}</option>
-            {others.map((s) => (
-              <option key={s.name} value={s.name}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-          <button className="primary" disabled={!adding} onClick={() => setWatch(adding, true)}>
-            + Watch
-          </button>
-        </div>
-      </div>
-      <ErrorNote error={svcs.error} />
-      <div className="card flush">
-        {!svcs.data ? (
-          <Loading />
-        ) : watched.length === 0 ? (
-          <Empty title="No watched services">Pick a service above to be alerted when it stops sending telemetry.</Empty>
-        ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Service</th>
-                <th>State</th>
-                <th>Last seen</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {watched.map((s) => {
-                const st = serviceUp(s);
-                return (
-                  <tr key={s.name}>
-                    <td style={{ fontWeight: 600 }}>{s.name}</td>
-                    <td>
-                      {st === "up" && (
-                        <span className="badge ok">
-                          <span className="dot ok" /> up
-                        </span>
-                      )}
-                      {st === "down" && (
-                        <span className="badge bad" title={`since ${fmtFull(s.down_since)}`}>
-                          <span className="dot bad" /> down {ago(s.down_since).replace(" ago", "")}
-                        </span>
-                      )}
-                      {st === "never" && <span className="badge">waiting for data</span>}
-                    </td>
-                    <td className="muted nowrap" title={fmtFull(s.last_seen)}>
-                      {ago(s.last_seen)}
-                    </td>
-                    <td style={{ textAlign: "right" }}>
-                      <button className="small" onClick={() => setWatch(s.name, false)}>
-                        Stop watching
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-      </div>
-    </>
-  );
-}

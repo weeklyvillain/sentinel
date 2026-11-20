@@ -354,3 +354,11 @@ export interface CheckResult {
   latency_ms: number;
   error?: string;
 }
+
+/** GET /api/status: sidebar counts and the Overview's setup checklist. */
+export interface Status {
+  firing_alarms: { id: number; name: string; value: number }[];
+  checks: { active: number; down: string[] };
+  analyzing: number;
+  setup: { telemetry: boolean; github: boolean; repo: boolean; watched: boolean; webhook: boolean };
+}

@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, Bucket, Group, SampleEvent, Service } from "../api";
+import { api, Bucket, Group, SampleEvent } from "../api";
 import { bucketKeys, StackedBars } from "../components/charts";
-import { Empty, ErrorNote, Icon, Loading, Seg, StatusBadge, useAsync, useToast } from "../components/ui";
+import { Empty, ErrorNote, Icon, Loading, Seg, StatusBadge, useAsync, useAction } from "../components/ui";
+import { useServices } from "../shared";
 import { ago, fmtFull, fmtNum, LEVEL_COLORS } from "../util";
 import { Queue } from "./AI";
 
@@ -24,7 +25,7 @@ export default function Issues() {
     [tab, service, params.get("q")],
     15000,
   );
-  const svcs = useAsync(() => api.get<Service[]>("/api/services"), []);
+  const svcs = useServices();
   const set = (k: string, v: string) => {
     const p = new URLSearchParams(params);
     if (v) p.set(k, v);
@@ -151,7 +152,7 @@ interface Detail {
 
 export function IssueDetail() {
   const { id } = useParams();
-  const toast = useToast();
+  const run = useAction();
   const d = useAsync(() => api.get<Detail>(`/api/groups/${id}`), [id], 20000);
   const [sampleIdx, setSampleIdx] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
@@ -163,22 +164,17 @@ export function IssueDetail() {
 
   const setStatus = async (status: "resolved" | "ignored" | "open") => {
     setBusy(true);
-    try {
-      await api.post(`/api/groups/${g.id}/status`, { status });
-      const onGH = g.issue_number ? " (and on GitHub)" : "";
-      toast(
-        status === "resolved"
-          ? `Closed${onGH}. If it happens again, the issue is reopened.`
-          : status === "ignored"
-            ? `Ignored${onGH ? ", closed as not planned on GitHub" : ""}. Sentinel will stay quiet about it.`
-            : `Reopened${onGH}`,
-      );
-      d.reload();
-    } catch (e) {
-      toast((e as Error).message, true);
-    } finally {
-      setBusy(false);
-    }
+    const onGH = g.issue_number ? " (and on GitHub)" : "";
+    await run(
+      () => api.post(`/api/groups/${g.id}/status`, { status }),
+      status === "resolved"
+        ? `Closed${onGH}. If it happens again, the issue is reopened.`
+        : status === "ignored"
+          ? `Ignored${onGH ? ", closed as not planned on GitHub" : ""}. Sentinel will stay quiet about it.`
+          : `Reopened${onGH}`,
+    );
+    d.reload();
+    setBusy(false);
   };
   const span = new Date(histogram[histogram.length - 1]?.t ?? g.last_seen).getTime() - new Date(histogram[0]?.t ?? g.first_seen).getTime();
   const bucketMs = histogram.length > 1 ? span / (histogram.length - 1) : 60000;

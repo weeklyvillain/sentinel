@@ -9,7 +9,18 @@ export default defineConfig({
   build: {
     outDir: "../internal/web/dist",
     emptyOutDir: true,
-    chunkSizeWarningLimit: 1200,
+    rollupOptions: {
+      output: {
+        // Libraries change less often than the app, so they get their own
+        // long-cached chunks: React + router, and the chart library (recharts
+        // with its d3 dependencies), which only chart pages load.
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (/node_modules[\\/](react|react-dom|scheduler|react-router|react-router-dom|@remix-run)[\\/]/.test(id)) return "vendor-react";
+          return "vendor-charts";
+        },
+      },
+    },
   },
   server: {
     proxy: {
