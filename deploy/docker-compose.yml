@@ -42,7 +42,9 @@ services:
     depends_on: [sentinel]
     environment:
       SENTINEL_URL: http://sentinel:8080
-      FIXER_TOKEN: ${FIXER_TOKEN:?set FIXER_TOKEN in .env}
+      # Not ":?": compose checks variables of every service, even ones in an
+      # inactive profile. The fixer itself refuses to start without a token.
+      FIXER_TOKEN: ${FIXER_TOKEN:-}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       ANTHROPIC_API_KEY: ${FIXER_ANTHROPIC_API_KEY:-}
       FIXER_EXTRA_TOOLS: ${FIXER_EXTRA_TOOLS:-}
