@@ -416,6 +416,16 @@ func TestWebhookSecretMaskingAndLogsAPI(t *testing.T) {
 	if resp, _ := h.do("POST", "/api/webhooks", `{"name":"bad","url":"ftp://x","events":[]}`, true); resp.StatusCode != 400 {
 		t.Fatal("bad url accepted")
 	}
+	// Styles are validated, stored and previewable.
+	if resp, _ := h.do("POST", "/api/webhooks", `{"name":"d","url":"`+hook.URL+`","format":"discord","events":[],"style":{"color_info":"blue"}}`, true); resp.StatusCode != 400 {
+		t.Fatal("bad color accepted")
+	}
+	if resp, body := h.do("POST", "/api/webhooks", `{"name":"d","url":"`+hook.URL+`","format":"discord","events":[],"style":{"rich":true,"username":"Ops"}}`, true); resp.StatusCode != 200 || !strings.Contains(body, `"username":"Ops"`) {
+		t.Fatalf("styled webhook: %d %s", resp.StatusCode, body)
+	}
+	if resp, body := h.do("POST", "/api/webhooks/preview", `{"format":"discord","event":"alarm.firing","style":{"rich":true}}`, true); resp.StatusCode != 200 || !strings.Contains(body, `"embeds"`) || !strings.Contains(body, "Alarm firing") {
+		t.Fatalf("preview: %d %s", resp.StatusCode, body)
+	}
 
 	now := time.Now().UTC()
 	h.st.InsertLogs(context.Background(), []store.LogRecord{

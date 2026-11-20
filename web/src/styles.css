@@ -601,3 +601,83 @@ table.logs td.log-col-val { max-width: 220px; overflow: hidden; text-overflow: e
 /* buttons styled as layout, not as controls */
 .setup-head, .wf-toggle, .dash-row > button, table.logs th.log-col > button, .ms-add, .search-help-row .link { height: auto; }
 .wf-toggle { border: 0; padding: 0; }
+
+/* webhook editor & live preview */
+.wh-editor { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 20px; align-items: start; }
+.wh-form { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+div.field { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; font-weight: 500; }
+.wh-section { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px 14px; margin: 0; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.wh-section legend { padding: 0 6px; margin-left: -6px; font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.wh-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.wh-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: -6px; }
+.wh-chips button { font-family: var(--mono); font-size: 11.5px; height: 22px; padding: 0 7px; color: var(--muted); }
+.wh-colors { display: flex; flex-wrap: wrap; gap: 14px; font-weight: 400; }
+.wh-color { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.wh-color input[type="color"] { width: 28px; height: 24px; padding: 0 2px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); cursor: pointer; }
+.wh-check { align-self: end; padding-bottom: 7px; }
+.wh-preview { position: sticky; top: 0; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.wh-preview-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wh-preview-title { font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin-right: auto; }
+.wh-preview-err { color: var(--bad); }
+.wh-json { max-height: 520px; font-size: 12px; }
+@media (max-width: 900px) { .wh-editor { grid-template-columns: 1fr; } .wh-preview { position: static; } }
+
+/* chat client mocks (approximations of each client's own look) */
+.wp { border-radius: var(--radius); padding: 14px 16px 16px; overflow: hidden; font-size: 15px; line-height: 1.375; }
+.wp a { text-decoration: none; }
+.wp a:hover { text-decoration: underline; }
+.wp-msg { display: flex; gap: 14px; align-items: flex-start; }
+.wp-main { min-width: 0; flex: 1; }
+.wp-avatar { flex: none; width: 40px; height: 40px; border-radius: 50%; object-fit: cover; display: grid; place-items: center; }
+.wp-avatar.square { border-radius: 8px; width: 36px; height: 36px; }
+.wp-avatar.logo { overflow: hidden; background: #121211; color: #121211; --on-ink: #fff; }
+.wp-avatar.logo svg { width: 100%; height: 100%; }
+.wp-avatar.emoji { font-size: 22px; background: transparent; }
+.wp-head { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; flex-wrap: wrap; }
+.wp-name { font-weight: 600; }
+.wp-app { font-size: 10px; font-weight: 600; padding: 1px 4px; border-radius: 3px; line-height: 1.3; }
+.wp-time { font-size: 12px; }
+.wp-text { white-space: pre-wrap; word-break: break-word; }
+.wp code { font-family: var(--mono); font-size: 0.85em; padding: 0.1em 0.3em; border-radius: 4px; }
+
+.wp.discord { background: #313338; color: #dbdee1; font-family: "gg sans", "Noto Sans", "Helvetica Neue", Helvetica, Arial, sans-serif; }
+.discord .wp-name { color: #f2f3f5; }
+.discord .wp-app { background: #5865f2; color: #fff; }
+.discord .wp-time { color: #949ba4; }
+.discord a { color: #00a8fc; }
+.discord code { background: #2b2d31; border: 1px solid #1e1f22; }
+.dc-mention { background: rgba(88, 101, 242, 0.3); color: #c9cdfb; border-radius: 3px; padding: 0 2px; font-weight: 500; }
+.dc-h1 { font-size: 1.5em; font-weight: 700; } .dc-h2 { font-size: 1.25em; font-weight: 700; } .dc-h3 { font-size: 1em; font-weight: 700; }
+.dc-quote { display: inline-block; border-left: 4px solid #4e5058; padding-left: 10px; }
+.dc-embed { margin-top: 4px; max-width: 520px; background: #2b2d31; border-left: 4px solid #1e1f22; border-radius: 4px; padding: 8px 16px 16px 12px; display: flex; flex-direction: column; gap: 8px; font-size: 14px; }
+.dc-title { font-weight: 600; color: #f2f3f5; margin-top: 8px; font-size: 16px; }
+.dc-desc { white-space: pre-wrap; word-break: break-word; }
+.dc-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.dc-field.full { grid-column: 1 / -1; }
+.dc-fname { font-weight: 600; color: #f2f3f5; margin-bottom: 2px; font-size: 14px; }
+.dc-fvalue { word-break: break-word; }
+.dc-footer { font-size: 12px; color: #b5bac1; margin-top: 2px; }
+
+.wp.slack { background: #fff; color: #1d1c1d; border: 1px solid var(--border); font-family: Lato, "Slack-Lato", "Helvetica Neue", Helvetica, Arial, sans-serif; }
+.slack .wp-name { color: #1d1c1d; font-weight: 900; }
+.slack .wp-app { background: rgba(29, 28, 29, 0.13); color: rgba(29, 28, 29, 0.7); }
+.slack .wp-time { color: #616061; }
+.slack a { color: #1264a3; }
+.slack code { color: #e01e5a; background: rgba(29, 28, 29, 0.04); border: 1px solid rgba(29, 28, 29, 0.13); }
+.sl-mention { background: rgba(29, 155, 209, 0.1); color: #1264a3; border-radius: 3px; padding: 0 2px; }
+.sl-quote { display: inline-block; border-left: 4px solid #ddd; padding-left: 10px; }
+.sl-attachment { display: flex; margin-top: 6px; max-width: 560px; }
+.sl-bar { flex: none; width: 4px; border-radius: 8px; background: #ddd; }
+.sl-body { padding: 0 0 0 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.sl-section { word-break: break-word; }
+.sl-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; margin-top: 4px; }
+.sl-context { font-size: 12px; color: #616061; display: flex; gap: 8px; flex-wrap: wrap; }
+@media (prefers-color-scheme: dark) {
+  .wp.slack { background: #1a1d21; color: #d1d2d3; border-color: #35373b; }
+  .slack .wp-name { color: #d1d2d3; }
+  .slack .wp-app { background: rgba(232, 232, 232, 0.13); color: rgba(232, 232, 232, 0.7); }
+  .slack .wp-time, .sl-context { color: #ababad; }
+  .slack a, .sl-mention { color: #1d9bd1; }
+  .slack code { color: #e8912d; background: rgba(232, 232, 232, 0.04); border-color: rgba(232, 232, 232, 0.13); }
+  .sl-quote { border-left-color: #545454; }
+}

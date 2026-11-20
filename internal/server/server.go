@@ -223,6 +223,7 @@ func (s *Server) Handler() http.Handler {
 
 	api("GET /api/webhooks", s.handleListWebhooks)
 	api("POST /api/webhooks", s.handleSaveWebhook)
+	api("POST /api/webhooks/preview", s.handlePreviewWebhook)
 	api("PUT /api/webhooks/{id}", s.handleSaveWebhook)
 	api("DELETE /api/webhooks/{id}", s.handleDeleteWebhook)
 	api("POST /api/webhooks/{id}/test", s.handleTestWebhook)

@@ -186,6 +186,8 @@ func (s *Store) migrate() error {
 		{"groups", "triage_verdict", "TEXT NOT NULL DEFAULT ''"},
 		{"groups", "triage_severity", "TEXT NOT NULL DEFAULT ''"},
 		{"groups", "triage_reason", "TEXT NOT NULL DEFAULT ''"},
+		// Webhooks: Slack/Discord message customization (JSON).
+		{"webhooks", "style", "TEXT NOT NULL DEFAULT '{}'"},
 	}
 	for _, c := range cols {
 		if err := s.addColumn(c.table, c.col, c.def); err != nil {

@@ -105,6 +105,14 @@ from the OTLP port):
     deliveries carry `X-Sentinel-Event` and, with a secret,
     `X-Sentinel-Signature: sha256=<HMAC-SHA256(secret, body)>`. Failures (network,
     429, 5xx) are retried twice and every delivery is logged in the UI.
+    Slack and Discord messages can be styled per webhook: a card (Discord
+    embed / Slack attachment with colors per problem, recovery and info event,
+    detail fields and a footer) or plain text, a message template with
+    `{icon}`, `{title}`, `{message}`, `{service}`, `{event}`, `{link}`,
+    `{issue}`, `{issue_url}` and `{time}`, a display name and avatar (or Slack
+    icon emoji), and a mention (`<@&role>`, `<!here>`, …) for problems or
+    every message. The editor shows a live preview of the exact payload for
+    any example event.
   - **AI** – provider, model and timeout for issue analysis, with a test button.
 
 Logs and metric points are kept for `LOG_RETENTION` / `METRIC_RETENTION`

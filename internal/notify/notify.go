@@ -14,7 +14,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -240,7 +239,7 @@ func retryable(status int) bool { return status == 0 || status == 429 || status 
 // SendOnce performs a single delivery attempt (also used for "Send test").
 func (d *Dispatcher) SendOnce(ctx context.Context, h store.Webhook, ev Event) store.Delivery {
 	d.init()
-	body, err := Payload(h.Format, ev)
+	body, err := Render(h.Format, h.Style, ev)
 	del := store.Delivery{WebhookID: h.ID, Event: ev.Type, Time: time.Now().UTC(), Payload: string(body)}
 	if err != nil {
 		del.Error = err.Error()
@@ -287,17 +286,9 @@ func randomID() string {
 	return hex.EncodeToString(b)
 }
 
-// Payload renders an event for a webhook format.
+// Payload renders an event for a webhook format with the default style.
 func Payload(format string, ev Event) ([]byte, error) {
-	switch format {
-	case "", "json":
-		return marshal(ev)
-	case "slack":
-		return marshal(map[string]string{"text": chatText(ev, func(url, label string) string { return "<" + url + "|" + label + ">" })})
-	case "discord":
-		return marshal(map[string]string{"content": chatText(ev, func(url, label string) string { return "[" + label + "](" + url + ")" })})
-	}
-	return nil, fmt.Errorf("unknown webhook format %q", format)
+	return Render(format, store.Style{}, ev)
 }
 
 func marshal(v any) ([]byte, error) {
@@ -308,17 +299,4 @@ func marshal(v any) ([]byte, error) {
 		return nil, err
 	}
 	return bytes.TrimRight(b.Bytes(), "\n"), nil
-}
-
-func chatText(ev Event, link func(url, label string) string) string {
-	icon := map[string]string{
-		IssueCreated: "🆕", IssueRegression: "🔁", IssueUpdated: "📈", ServiceDown: "🔴", ServiceRecovered: "🟢", CheckDown: "🔴", CheckRecovered: "🟢",
-		AlarmFiring: "🚨", AlarmResolved: "✅", FixRequested: "🤖", FixOpened: "🛠️", FixMerged: "✅", SLOBurn: "🔥", SLORecovered: "✅", Test: "🧪",
-	}[ev.Type]
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s *Sentinel* — %s", icon, ev.Message)
-	if ev.Issue != nil && ev.Issue.URL != "" {
-		fmt.Fprintf(&b, " %s", link(ev.Issue.URL, fmt.Sprintf("%s#%d", ev.Issue.Repo, ev.Issue.Number)))
-	}
-	return b.String()
 }

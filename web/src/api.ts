@@ -385,8 +385,25 @@ export interface Webhook {
   format: "json" | "slack" | "discord";
   events: string[];
   enabled: boolean;
+  style: WebhookStyle;
   has_secret: boolean;
   created_at: string;
+}
+
+/** How a Slack/Discord message looks; empty strings mean the default. */
+export interface WebhookStyle {
+  rich: boolean;
+  template?: string;
+  username?: string;
+  avatar_url?: string;
+  icon_emoji?: string;
+  mention?: string;
+  mention_on?: "" | "problems" | "all";
+  color_problem?: string;
+  color_recovery?: string;
+  color_info?: string;
+  hide_fields?: boolean;
+  footer?: string;
 }
 
 export interface Delivery {

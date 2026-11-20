@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -741,7 +742,8 @@ func (s *Server) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
 	for _, h := range hooks {
 		out = append(out, view(h))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"webhooks": out, "event_types": notify.EventTypes})
+	writeJSON(w, http.StatusOK, map[string]any{"webhooks": out, "event_types": notify.EventTypes,
+		"preview_events": notify.PreviewEventTypes, "placeholders": notify.Placeholders})
 }
 
 func (s *Server) handleSaveWebhook(w http.ResponseWriter, r *http.Request) {
@@ -751,14 +753,15 @@ func (s *Server) handleSaveWebhook(w http.ResponseWriter, r *http.Request) {
 		Secret      *string  `json:"secret"` // nil/"" on update = keep
 		ClearSecret bool     `json:"clear_secret"`
 		Format      string   `json:"format"`
-		Events      []string `json:"events"`
-		Enabled     bool     `json:"enabled"`
+		Events      []string    `json:"events"`
+		Enabled     bool        `json:"enabled"`
+		Style       store.Style `json:"style"`
 	}
 	if err := readJSONLoose(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	h := store.Webhook{Name: strings.TrimSpace(body.Name), URL: strings.TrimSpace(body.URL), Format: body.Format, Events: body.Events, Enabled: body.Enabled}
+	h := store.Webhook{Name: strings.TrimSpace(body.Name), URL: strings.TrimSpace(body.URL), Format: body.Format, Events: body.Events, Enabled: body.Enabled, Style: body.Style}
 	if r.PathValue("id") != "" {
 		id, err := pathID(r)
 		if err != nil {
@@ -817,7 +820,32 @@ func validateWebhook(h *store.Webhook) error {
 		events = append(events, e)
 	}
 	h.Events = events
-	return nil
+	return notify.NormalizeStyle(&h.Style)
+}
+
+// handlePreviewWebhook renders the payload a webhook would send for a sample
+// event, so the editor can preview unsaved changes.
+func (s *Server) handlePreviewWebhook(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Format string      `json:"format"`
+		Style  store.Style `json:"style"`
+		Event  string      `json:"event"`
+	}
+	if err := readJSONLoose(r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := notify.NormalizeStyle(&body.Style); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ev := notify.SampleEvent(body.Event)
+	b, err := notify.Render(body.Format, body.Style, ev)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"event": ev.Type, "payload": json.RawMessage(b)})
 }
 
 func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {

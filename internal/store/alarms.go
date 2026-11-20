@@ -17,7 +17,35 @@ type Webhook struct {
 	Format    string    `json:"format"` // json | slack | discord
 	Events    []string  `json:"events"` // subscribed event types (alarm events are routed per alarm)
 	Enabled   bool      `json:"enabled"`
+	Style     Style     `json:"style"` // message customization for slack/discord
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// Style customizes how a chat (Slack/Discord) webhook message looks. The
+// zero value renders the classic one-line text message.
+type Style struct {
+	// Rich sends a card (Discord embed / Slack attachment) instead of a line of text.
+	Rich bool `json:"rich"`
+	// Template is the message text (plain) or card description (rich), with
+	// {placeholders}; empty uses the default.
+	Template string `json:"template,omitempty"`
+	// Username and AvatarURL override the poster's name and picture.
+	Username  string `json:"username,omitempty"`
+	AvatarURL string `json:"avatar_url,omitempty"`
+	// IconEmoji (Slack only, e.g. ":rotating_light:") overrides the avatar.
+	IconEmoji string `json:"icon_emoji,omitempty"`
+	// Mention is prepended to the message ("<@&role>", "<!channel>", …).
+	Mention string `json:"mention,omitempty"`
+	// MentionOn picks which events mention: "problems" (default) or "all".
+	MentionOn string `json:"mention_on,omitempty"`
+	// Card colors (#rrggbb) by kind of event; empty uses the default.
+	ColorProblem  string `json:"color_problem,omitempty"`
+	ColorRecovery string `json:"color_recovery,omitempty"`
+	ColorInfo     string `json:"color_info,omitempty"`
+	// HideFields drops the detail fields (service, issue, values) from cards.
+	HideFields bool `json:"hide_fields,omitempty"`
+	// Footer replaces the "Sentinel" card footer.
+	Footer string `json:"footer,omitempty"`
 }
 
 // Subscribed reports whether the webhook wants event type ev.
@@ -30,18 +58,19 @@ func (w Webhook) Subscribed(ev string) bool {
 	return false
 }
 
-const webhookCols = `SELECT id, name, url, secret, format, events, enabled, created_at FROM webhooks`
+const webhookCols = `SELECT id, name, url, secret, format, events, enabled, style, created_at FROM webhooks`
 
 func scanWebhook(r scanner) (Webhook, error) {
 	var w Webhook
-	var events string
+	var events, style string
 	var enabled int
 	var created int64
-	err := r.Scan(&w.ID, &w.Name, &w.URL, &w.Secret, &w.Format, &events, &enabled, &created)
+	err := r.Scan(&w.ID, &w.Name, &w.URL, &w.Secret, &w.Format, &events, &enabled, &style, &created)
 	if err != nil {
 		return w, err
 	}
 	json.Unmarshal([]byte(events), &w.Events)
+	json.Unmarshal([]byte(style), &w.Style)
 	if w.Events == nil {
 		w.Events = []string{}
 	}
@@ -80,16 +109,17 @@ func (s *Store) GetWebhook(ctx context.Context, id int64) (Webhook, error) {
 // SaveWebhook inserts (ID == 0) or updates a webhook and returns its id.
 func (s *Store) SaveWebhook(ctx context.Context, w Webhook) (int64, error) {
 	ev, _ := json.Marshal(w.Events)
+	st, _ := json.Marshal(w.Style)
 	if w.ID == 0 {
-		res, err := s.db.ExecContext(ctx, `INSERT INTO webhooks (name, url, secret, format, events, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			w.Name, w.URL, w.Secret, w.Format, string(ev), boolInt(w.Enabled), ms(time.Now()))
+		res, err := s.db.ExecContext(ctx, `INSERT INTO webhooks (name, url, secret, format, events, enabled, style, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			w.Name, w.URL, w.Secret, w.Format, string(ev), boolInt(w.Enabled), string(st), ms(time.Now()))
 		if err != nil {
 			return 0, err
 		}
 		return res.LastInsertId()
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE webhooks SET name = ?, url = ?, secret = ?, format = ?, events = ?, enabled = ? WHERE id = ?`,
-		w.Name, w.URL, w.Secret, w.Format, string(ev), boolInt(w.Enabled), w.ID)
+	res, err := s.db.ExecContext(ctx, `UPDATE webhooks SET name = ?, url = ?, secret = ?, format = ?, events = ?, enabled = ?, style = ? WHERE id = ?`,
+		w.Name, w.URL, w.Secret, w.Format, string(ev), boolInt(w.Enabled), string(st), w.ID)
 	if err != nil {
 		return 0, err
 	}
