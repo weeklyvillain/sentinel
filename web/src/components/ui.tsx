@@ -324,3 +324,114 @@ export function Logo({ className }: { className?: string }) {
     </svg>
   );
 }
+
+// --- multi-select dropdown ---
+
+export interface MultiOption {
+  value: string;
+  label?: ReactNode;
+  /** A coloured dot before the label (levels). */
+  color?: string;
+  hint?: ReactNode;
+}
+
+/**
+ * A dropdown of checkboxes. Nothing checked means "all". Each row has an
+ * "only" shortcut; long lists get a filter box.
+ */
+export function MultiSelect(props: {
+  label: string;
+  options: MultiOption[];
+  value: string[];
+  onChange: (v: string[]) => void;
+  allLabel?: string;
+  empty?: string;
+  /** Values can be typed in, not only picked (Enter adds one). */
+  freeText?: boolean;
+}) {
+  const { label, options, value, onChange, allLabel = "all" } = props;
+  const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState("");
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => ref.current && !ref.current.contains(e.target as Node) && setOpen(false);
+    const key = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", key);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", key);
+    };
+  }, [open]);
+  useEffect(() => setFilter(""), [open]);
+  // Selected values stay listed even if they are no longer offered.
+  const all = [...options, ...value.filter((v) => !options.some((o) => o.value === v)).map((v) => ({ value: v }) as MultiOption)];
+  const shown = filter ? all.filter((o) => o.value.toLowerCase().includes(filter.toLowerCase())) : all;
+  const summary = value.length === 0 ? allLabel : value.length <= 2 ? value.join(", ") : `${value.length} selected`;
+  return (
+    <div className={"var-pick ms" + (value.length ? " on" : "")} ref={ref}>
+      <span>{label}</span>
+      <button type="button" onClick={() => setOpen(!open)} aria-expanded={open} aria-haspopup="listbox" aria-label={`${label}: ${summary}`}>
+        <span className="ms-summary">{summary}</span> <span className="faint">▾</span>
+      </button>
+      {open && (
+        <div className="var-menu ms-menu" role="listbox" aria-multiselectable>
+          {(all.length > 8 || props.freeText) && (
+            <input
+              autoFocus
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter") return;
+                e.preventDefault();
+                const v = filter.trim();
+                if (props.freeText && v && !value.includes(v)) {
+                  onChange([...value, v]);
+                  setFilter("");
+                }
+              }}
+              placeholder={props.freeText ? "Filter, or type a field and press Enter" : "Filter…"}
+              aria-label={`Filter ${label}`}
+            />
+          )}
+          {props.freeText && filter.trim() && !all.some((o) => o.value === filter.trim()) && (
+            <button
+              type="button"
+              className="link small ms-add"
+              onClick={() => {
+                onChange([...value, filter.trim()]);
+                setFilter("");
+              }}
+            >
+              Add “{filter.trim()}”
+            </button>
+          )}
+          <label className="check ms-row">
+            <input type="checkbox" checked={value.length === 0} onChange={() => onChange([])} /> <span className="muted">{allLabel}</span>
+          </label>
+          {shown.map((o) => (
+            <div key={o.value} className="ms-row">
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={value.includes(o.value)}
+                  onChange={(e) => onChange(e.target.checked ? [...value, o.value] : value.filter((x) => x !== o.value))}
+                />
+                {o.color && <i className="dot" style={{ background: o.color }} />}
+                <span className="truncate">{o.label ?? o.value}</span>
+                {o.hint && <span className="faint small">{o.hint}</span>}
+              </label>
+              <button type="button" className="link small ms-only" onClick={() => onChange([o.value])}>
+                only
+              </button>
+            </div>
+          ))}
+          {shown.length === 0 && !(props.freeText && filter.trim()) && (
+            <span className="small faint">{all.length === 0 ? (props.empty ?? "Nothing yet") : "No match"}</span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

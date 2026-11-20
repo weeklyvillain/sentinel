@@ -506,3 +506,32 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .field-row:hover .fa, .field-row.is-message .fa, .field-row .fa:focus-within { opacity: 1; }
 @media (hover: none) { .field-row .fa { opacity: 1; } }
 @media (max-width: 640px) { .field-row { grid-template-columns: 1fr; gap: 2px; } }
+
+/* Logs: multi-select dropdowns, saved searches, syntax help */
+.ms > button { display: inline-flex; align-items: center; gap: 4px; max-width: 220px; padding: 6px 10px; }
+.ms-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ms.on { border-color: var(--accent); }
+.ms.on > span:first-child { color: var(--accent); }
+.ms-menu { min-width: 220px; gap: 2px; }
+.ms-menu input:not([type]) { margin-bottom: 6px; }
+.ms-row { display: flex; align-items: center; gap: 6px; padding: 3px 4px; border-radius: 6px; }
+.ms-row:hover, .ms-row.on { background: var(--panel-2); }
+.ms-row > label.check { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
+.ms-only { visibility: hidden; }
+.ms-row:hover .ms-only, .ms-only:focus-visible { visibility: visible; }
+.saved-menu { min-width: 280px; max-width: 420px; gap: 4px; }
+.saved-menu .saved-name { flex: 1; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-help { margin-top: 12px; padding: 12px; border-radius: 8px; background: var(--panel-2); }
+.search-help-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 6px 16px; }
+.search-help-row { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.search-help-row .link { text-align: left; font-size: 12px; word-break: break-all; }
+button.ghost.on { color: var(--accent); background: var(--accent-soft); }
+.metric-controls { margin-bottom: 10px; }
+.live-paused { margin-bottom: 12px; }
+.scroll-end { display: flex; justify-content: center; align-items: center; gap: 8px; min-height: 48px; }
+.ms-add { text-align: left; padding: 3px 4px; }
+table.logs th.log-col { white-space: nowrap; max-width: 220px; }
+table.logs th.log-col > span { display: inline-block; max-width: 180px; vertical-align: middle; text-transform: none; }
+table.logs th.log-col > button { padding: 0 4px; margin-left: 2px; vertical-align: middle; opacity: .5; }
+table.logs th.log-col:hover > button { opacity: 1; }
+table.logs td.log-col-val { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
