@@ -1,8 +1,9 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { api, Bucket, LogRecord, qs, Service } from "../api";
+import { api, Bucket, LogRecord, qs } from "../api";
 import { bucketKeys, Legend, StackedBars } from "../components/charts";
 import { Empty, ErrorNote, Icon, RangePicker, Switch, useAsync } from "../components/ui";
+import { useServices } from "../shared";
 import { fmtFull, fmtNum, fmtTime, LEVEL_COLORS, levelOf } from "../util";
 
 const LEVELS = ["debug", "info", "warn", "error", "fatal"];
@@ -44,7 +45,7 @@ export default function Logs() {
   const filter = { q, service: services, min_severity: minSev, range: from ? undefined : range, from, to, trace_id: traceId, fingerprint, attr: attrs };
   const key = qs(filter);
 
-  const svcList = useAsync(() => api.get<Service[]>("/api/services"), []);
+  const svcList = useServices();
   const logs = useAsync(() => api.get<LogsResp>("/api/logs" + qs({ ...filter, limit: "100" })), [key], live ? 5000 : 0);
   const hist = useAsync(() => api.get<{ buckets: Bucket[]; bucket_ms: number }>("/api/logs/histogram" + key), [key], live ? 10000 : 0);
 

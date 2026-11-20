@@ -1,43 +1,26 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api, GitHubStatus, Service } from "../api";
-import { useMe } from "../App";
-import { Empty, ErrorNote, Loading, Modal, Switch, useAsync, useToast } from "../components/ui";
+import { Empty, ErrorNote, Loading, Modal, Switch, useAction, useAsync, useToast } from "../components/ui";
+import { useMe, useServices } from "../shared";
 import { ago, fmtFull, serviceUp } from "../util";
 
 export default function Services() {
   const me = useMe();
-  const toast = useToast();
-  const svcs = useAsync(() => api.get<Service[]>("/api/services"), [], 15000);
+  const run = useAction();
+  const svcs = useServices();
   const gh = useAsync(() => api.get<GitHubStatus>("/api/github"), []);
   const [editing, setEditing] = useState<Partial<Service> | null>(null);
 
-  const remove = async (s: Service) => {
-    if (!confirm(`Remove ${s.name}? Its logs and issues are kept; if it sends telemetry again it reappears.`)) return;
-    try {
-      await api.del(`/api/services/${encodeURIComponent(s.name)}`);
-      toast(`Removed ${s.name}`);
-      svcs.reload();
-    } catch (e) {
-      toast((e as Error).message, true);
-    }
-  };
-  const setIssues = async (s: Service, issues: boolean) => {
-    try {
-      await api.patch(`/api/services/${encodeURIComponent(s.name)}`, { issues });
-      toast(issues ? `Issues on for ${s.name}` : `Issues off for ${s.name}: errors are still grouped, nothing is filed`);
-      svcs.reload();
-    } catch (e) {
-      toast((e as Error).message, true);
-    }
+  const flag = async (s: Service, patch: { issues?: boolean; watch?: boolean }, ok: string) => {
+    if (await run(() => api.patch(`/api/services/${encodeURIComponent(s.name)}`, patch), ok)) svcs.reload();
   };
   const defaultRepo = gh.data?.default_repo || gh.data?.env_default_repo;
 
   return (
     <>
       <div className="page-head">
-        <h1>Services</h1>
-        <span className="sub">Services appear automatically when they send telemetry; add one to route its issues ahead of time.</span>
+        <span className="sub">Services appear when they send telemetry. Add one ahead of time to route its issues.</span>
         <div className="actions">
           <button className="primary" onClick={() => setEditing({})}>
             + Add service
@@ -56,77 +39,69 @@ export default function Services() {
           <table>
             <thead>
               <tr>
-                <th style={{ width: 60 }} title="File GitHub issues for this service">Issues</th>
                 <th>Service</th>
                 <th>Status</th>
-                <th>Last seen</th>
                 <th>Issues go to</th>
-                <th>Labels</th>
                 <th className="num">Active groups</th>
+                <th title="File GitHub issues for this service's errors">Issues</th>
+                <th title={`Flag the service as down after ${me.info.down_after} without telemetry`}>Watch</th>
                 <th />
               </tr>
             </thead>
             <tbody>
-              {svcs.data.map((s) => {
-                const st = serviceUp(s);
-                return (
-                  <tr key={s.name} style={s.issues ? undefined : { opacity: 0.75 }}>
-                    <td>
-                      <Switch checked={s.issues} onChange={(v) => setIssues(s, v)} label={`Issues for ${s.name}`} />
-                    </td>
-                    <td>
-                      <div style={{ fontWeight: 600 }}>{s.name}</div>
-                      <div className="small faint">
-                        {s.env || "—"}
-                        {s.description ? ` · ${s.description}` : ""}
-                      </div>
-                    </td>
-                    <td>
-                      {st === "up" && !s.watch && (
-                        <span className="badge" title="Not watched for silence. Add it under Uptime → Watched services to be alerted when it stops sending.">
-                          sending
-                        </span>
-                      )}
-                      {st === "up" && s.watch && <span className="badge ok"><span className="dot ok" /> up</span>}
-                      {st === "down" && <span className="badge bad" title={`since ${fmtFull(s.down_since)}`}><span className="dot bad" /> down</span>}
-                      {st === "never" && <span className="badge">waiting for data</span>}
-                    </td>
-                    <td className="muted nowrap" title={fmtFull(s.last_seen)}>
-                      {ago(s.last_seen)}
-                    </td>
-                    <td className="nowrap">
-                      {s.repo ? <span className="mono">{s.repo}</span> : defaultRepo ? <span className="muted">default ({defaultRepo})</span> : <span style={{ color: "var(--warn)" }}>not set</span>}
-                    </td>
-                    <td>
-                      {(s.labels ?? []).map((l) => (
-                        <span key={l} className="badge" style={{ marginRight: 4 }}>
-                          {l}
-                        </span>
-                      ))}
-                    </td>
-                    <td className="num">
-                      {s.active_groups ? <Link to={`/issues?service=${encodeURIComponent(s.name)}`}>{s.active_groups}</Link> : <span className="faint">0</span>}
-                    </td>
-                    <td className="nowrap" style={{ textAlign: "right" }}>
-                      <Link className="btn small" to={`/logs?service=${encodeURIComponent(s.name)}`}>
-                        Logs
-                      </Link>{" "}
-                      <button className="small" onClick={() => setEditing(s)}>
-                        Edit
-                      </button>{" "}
-                      <button className="small danger" onClick={() => remove(s)}>
-                        Remove
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
+              {svcs.data.map((s) => (
+                <tr key={s.name}>
+                  <td>
+                    <div style={{ fontWeight: 600 }}>{s.name}</div>
+                    <div className="small faint">
+                      {s.env || "—"}
+                      {s.description ? ` · ${s.description}` : ""}
+                    </div>
+                  </td>
+                  <td className="nowrap">
+                    <ServiceState s={s} />
+                  </td>
+                  <td className="nowrap">
+                    {s.repo ? <span className="mono">{s.repo}</span> : defaultRepo ? <span className="muted">default ({defaultRepo})</span> : <span style={{ color: "var(--warn)" }}>not set</span>}
+                    {(s.labels ?? []).length > 0 && <div className="small faint">labels: {s.labels!.join(", ")}</div>}
+                  </td>
+                  <td className="num">
+                    {s.active_groups ? <Link to={`/issues?service=${encodeURIComponent(s.name)}`}>{s.active_groups}</Link> : <span className="faint">0</span>}
+                  </td>
+                  <td>
+                    <Switch
+                      checked={s.issues}
+                      label={`Issues for ${s.name}`}
+                      onChange={(v) => flag(s, { issues: v }, v ? `Issues on for ${s.name}` : `Issues off for ${s.name}: errors are still grouped, nothing is filed`)}
+                    />
+                  </td>
+                  <td>
+                    <Switch
+                      checked={s.watch}
+                      label={`Watch ${s.name} for downtime`}
+                      onChange={(v) =>
+                        flag(s, { watch: v }, v ? `Watching ${s.name}: it is flagged down after ${me.info.down_after} of silence` : `Stopped watching ${s.name}`)
+                      }
+                    />
+                  </td>
+                  <td className="nowrap" style={{ textAlign: "right" }}>
+                    <Link className="btn small" to={`/logs?service=${encodeURIComponent(s.name)}`}>
+                      Logs
+                    </Link>{" "}
+                    <button className="small" onClick={() => setEditing(s)}>
+                      Edit
+                    </button>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         )}
       </div>
       <p className="small faint">
-        A service is flagged down after {me.info.down_after} without logs, traces or metrics. Repositories must be authorized on the <Link to="/github">GitHub</Link> page.
+        <strong>Watch</strong>: a watched service that sends nothing for {me.info.down_after} is flagged down, gets an issue and sends <code>service.down</code>{" "}
+        to webhooks. Unwatched services are never flagged for being quiet. Repositories must be authorized under{" "}
+        <Link to="/settings/github">Settings → GitHub</Link>.
       </p>
       {editing && (
         <ServiceForm
@@ -143,6 +118,24 @@ export default function Services() {
   );
 }
 
+/** Up/down only means something for watched services; others just show when they were last heard from. */
+function ServiceState({ s }: { s: Service }) {
+  const st = serviceUp(s);
+  if (st === "never") return <span className="badge">waiting for data</span>;
+  if (st === "down")
+    return (
+      <span className="badge bad" title={`since ${fmtFull(s.down_since)}`}>
+        <span className="dot bad" /> down · {ago(s.down_since)}
+      </span>
+    );
+  return (
+    <span className="row" title={fmtFull(s.last_seen)} style={{ gap: 6 }}>
+      {s.watch ? <span className="dot ok" /> : null}
+      <span className={s.watch ? "" : "muted"}>{s.watch ? "up" : "seen"} · {ago(s.last_seen)}</span>
+    </span>
+  );
+}
+
 function ServiceForm(props: { initial: Partial<Service>; gh?: GitHubStatus; onClose: () => void; onSaved: () => void }) {
   const toast = useToast();
   const isNew = !props.initial.name;
@@ -155,6 +148,16 @@ function ServiceForm(props: { initial: Partial<Service>; gh?: GitHubStatus; onCl
   const allowed = (props.gh?.repos ?? []).filter((r) => r.allowed);
   const appMode = props.gh?.mode === "app";
 
+  const remove = async () => {
+    if (!confirm(`Remove ${name}? Its logs and issues are kept; if it sends telemetry again it reappears.`)) return;
+    try {
+      await api.del(`/api/services/${encodeURIComponent(name)}`);
+      toast(`Removed ${name}`);
+      props.onSaved();
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  };
   const save = async () => {
     setSaving(true);
     setErr(undefined);
@@ -177,6 +180,11 @@ function ServiceForm(props: { initial: Partial<Service>; gh?: GitHubStatus; onCl
       onClose={props.onClose}
       footer={
         <>
+          {!isNew && (
+            <button className="danger" onClick={remove} style={{ marginRight: "auto" }}>
+              Remove
+            </button>
+          )}
           <button onClick={props.onClose}>Cancel</button>
           <button className="primary" onClick={save} disabled={saving || !name.trim()}>
             {saving ? "Saving…" : "Save"}
@@ -206,7 +214,7 @@ function ServiceForm(props: { initial: Partial<Service>; gh?: GitHubStatus; onCl
         )}
         {appMode && allowed.length === 0 && (
           <span className="help">
-            No repositories authorized yet — allow some on the <Link to="/github">GitHub</Link> page.
+            No repositories authorized yet — allow some on the <Link to="/settings/github">GitHub</Link> settings.
           </span>
         )}
       </label>

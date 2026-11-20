@@ -47,8 +47,8 @@ app ──OTLP──▶ Collector ──otlphttp──▶ Sentinel :4318 ──�
      is ignored and Sentinel stays quiet.
    - At most `MAX_ISSUES_PER_HOUR` new issues per rolling hour; the rest stay
      pending until there is room.
-5. **Service down** – a *watched* service (added under **Uptime → Watched
-   services**) that was seen and then sends nothing for `DOWN_AFTER` gets a
+5. **Service down** – a *watched* service (the **Watch** switch under
+   **Settings → Services**) that was seen and then sends nothing for `DOWN_AFTER` gets a
    synthetic `down` event. Services that are not watched are never flagged for
    being quiet. The `down` event that goes through the same
    grouping (down groups skip the settle window and `MIN_EVENTS`). After a
@@ -62,7 +62,7 @@ Sentinel serves a dashboard on `SENTINEL_HTTP_ADDR` (default `:8080`, separate
 from the OTLP port):
 
 - **Overview** – services up/down, open issues, errors by service, log volume
-  by level, firing alarms.
+  by level, firing alarms, and a setup checklist until everything is set up.
 - **Logs** – full-text search over every log line (and error span), filters
   for service, level, time range, trace id, attributes and "same error";
   a clickable volume histogram, live tail and pagination. Query syntax: words
@@ -70,27 +70,38 @@ from the OTLP port):
 - **Issues** – error groups by status with their GitHub issue, occurrence
   chart, first/latest samples with stack traces, ignore / un-ignore, and the
   reason a group is still pending (e.g. no repository configured).
-- **Metrics** – charts for every OTLP metric a service reports (gauges as-is,
-  cumulative counters as per-interval deltas, histograms as interval means),
-  with avg/sum/max/min/count and per-attribute split.
-- **Services** – discovered automatically from `service.name`; add a service
-  ahead of time, choose which repository its issues go to and extra labels.
-  The **Issues** switch turns issue creation off per service: its errors are
-  still stored and grouped, but nothing is filed, updated or reopened on
-  GitHub until it is switched back on.
-- **Alarms** – rules evaluated every 15s: *log count* (matching text, level,
-  service, window), *metric threshold* (aggregate over a window) and *service
-  down*. A preview shows the current value; state changes are kept as history.
-- **Uptime** – HTTP checks run from the Sentinel server (see below).
-- **Webhooks** – Slack, Discord or generic JSON targets for `issue.created`,
-  `issue.regression`, `issue.updated`, `service.down`, `service.recovered`,
-  `check.down`, `check.recovered`
-  (alarm notifications go to the webhooks chosen on each alarm). JSON
-  deliveries carry `X-Sentinel-Event` and, with a secret,
-  `X-Sentinel-Signature: sha256=<HMAC-SHA256(secret, body)>`. Failures (network,
-  429, 5xx) are retried twice and every delivery is logged in the UI.
-- **GitHub** – install the GitHub App, sync repositories, authorize the
-  repositories Sentinel may create issues in, and pick a default repository.
+  The **AI queue** view lists the model analyses waiting, running, done or
+  failed, with a retry for failed ones.
+- **Dashboards** – your own graphs, gauges, stats and bar lists over metrics
+  and logs, with a panel editor, formulas and templates. **Explore metrics**
+  charts every OTLP metric a service reports (gauges as-is, cumulative
+  counters as per-interval deltas, histograms as interval means), with
+  avg/sum/max/min/count and per-attribute split; **+ Dashboard** on a chart
+  saves it as a panel.
+- **Alerts**
+  - **Alarms** – rules evaluated every 15s: *log count* (matching text, level,
+    service, window) and *metric threshold* (aggregate over a window). A
+    preview shows the current value; state changes are kept as history.
+    Older *service down* alarms keep working; for new ones, watch the service
+    instead and subscribe a webhook to `service.down`.
+  - **Uptime** – HTTP checks run from the Sentinel server (see below).
+- **Settings**
+  - **Services** – discovered automatically from `service.name`; add a service
+    ahead of time, choose which repository its issues go to and extra labels.
+    The **Issues** switch turns issue creation off per service: its errors are
+    still stored and grouped, but nothing is filed, updated or reopened on
+    GitHub until it is switched back on. The **Watch** switch flags the
+    service as down when it goes quiet (see *Service down* above).
+  - **GitHub** – install the GitHub App, sync repositories, authorize the
+    repositories Sentinel may create issues in, and pick a default repository.
+  - **Webhooks** – Slack, Discord or generic JSON targets for `issue.created`,
+    `issue.regression`, `issue.updated`, `service.down`, `service.recovered`,
+    `check.down`, `check.recovered`
+    (alarm notifications go to the webhooks chosen on each alarm). JSON
+    deliveries carry `X-Sentinel-Event` and, with a secret,
+    `X-Sentinel-Signature: sha256=<HMAC-SHA256(secret, body)>`. Failures (network,
+    429, 5xx) are retried twice and every delivery is logged in the UI.
+  - **AI** – provider, model and timeout for issue analysis, with a test button.
 
 Logs and metric points are kept for `LOG_RETENTION` / `METRIC_RETENTION`
 (default 7 days) and pruned every 10 minutes. Everything is redacted before
@@ -117,7 +128,7 @@ Sessions are HttpOnly cookies (7 days). State-changing API calls require an
 4. Generate a private key and a client secret, then start Sentinel with
    `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_FILE`, `GITHUB_APP_CLIENT_ID`,
    `GITHUB_APP_CLIENT_SECRET` and `PUBLIC_URL`.
-5. In the dashboard: **GitHub → Install on GitHub**, choose repositories,
+5. In the dashboard: **Settings → GitHub → Install on GitHub**, choose repositories,
    come back, and switch on the repositories Sentinel may file issues in.
    Then set a default repository and/or a repository per service.
 
@@ -244,12 +255,12 @@ It:
   network is unreachable is delivered when it comes back,
 - sends **host metrics** (CPU, memory, disk, network, load) as a service named
   `HOST_SERVICE_NAME`. Sentinel then shows the server's own charts, and, once
-  you watch that service on the Uptime page, flags the whole machine as down
+  you switch on **Watch** for that service under Settings → Services, flags the whole machine as down
   when it goes quiet.
 
 ### 3. Uptime checks
 
-On **Uptime** in the dashboard, add the public health URLs of your apps (e.g.
+On **Alerts → Uptime** in the dashboard, add the public health URLs of your apps (e.g.
 `https://shop.example.com/healthz`). Sentinel probes them from its own server
 on an interval, with an expected status (`2xx`, `200,204`, …) and optional
 body text. After N consecutive failures the check is **down**: Sentinel files

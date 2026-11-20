@@ -1,53 +1,37 @@
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, GitHubStatus, Repo } from "../api";
-import { Empty, ErrorNote, Icon, Loading, Switch, useAsync, useToast } from "../components/ui";
+import { Empty, ErrorNote, Icon, Loading, Switch, useAsync, useAction } from "../components/ui";
 import { ago } from "../util";
 
 export default function GitHub() {
-  const toast = useToast();
+  const run = useAction();
   const [params] = useSearchParams();
   const st = useAsync(() => api.get<GitHubStatus>("/api/github"), []);
   const [busy, setBusy] = useState(false);
   const [filter, setFilter] = useState("");
 
   const install = async () => {
-    try {
-      const { url } = await api.get<{ url: string }>("/api/github/install");
-      location.href = url;
-    } catch (e) {
-      toast((e as Error).message, true);
-    }
+    const r = await run(() => api.get<{ url: string }>("/api/github/install"));
+    if (r) location.href = r.url;
   };
   const sync = async () => {
     setBusy(true);
-    try {
-      st.setData(await api.post<GitHubStatus>("/api/github/sync"));
-      toast("Synced repositories from GitHub");
-    } catch (e) {
-      toast((e as Error).message, true);
-    } finally {
-      setBusy(false);
-    }
+    const d = await run(() => api.post<GitHubStatus>("/api/github/sync"), "Synced repositories from GitHub");
+    if (d) st.setData(d);
+    setBusy(false);
   };
   const allow = async (r: Repo, allowed: boolean) => {
     const [owner, name] = r.full_name.split("/");
-    try {
-      await api.put(`/api/github/repos/${owner}/${name}`, { allowed });
-      st.setData((d) => d && { ...d, repos: d.repos.map((x) => (x.full_name === r.full_name ? { ...x, allowed } : x)) });
-      toast(allowed ? `Sentinel may now create issues in ${r.full_name}` : `Revoked ${r.full_name}`);
-    } catch (e) {
-      toast((e as Error).message, true);
-    }
+    const ok = await run(
+      () => api.put(`/api/github/repos/${owner}/${name}`, { allowed }).then(() => true),
+      allowed ? `Sentinel may now create issues in ${r.full_name}` : `Revoked ${r.full_name}`,
+    );
+    if (ok) st.setData((d) => d && { ...d, repos: d.repos.map((x) => (x.full_name === r.full_name ? { ...x, allowed } : x)) });
   };
   const setDefault = async (repo: string) => {
-    try {
-      await api.put("/api/github/default", { repo });
-      st.setData((d) => d && { ...d, default_repo: repo });
-      toast(repo ? `Default repository: ${repo}` : "Default repository cleared");
-    } catch (e) {
-      toast((e as Error).message, true);
-    }
+    const ok = await run(() => api.put("/api/github/default", { repo }).then(() => true), repo ? `Default repository: ${repo}` : "Default repository cleared");
+    if (ok) st.setData((d) => d && { ...d, default_repo: repo });
   };
 
   if (st.error) return <ErrorNote error={st.error} />;
@@ -59,7 +43,6 @@ export default function GitHub() {
   return (
     <>
       <div className="page-head">
-        <h1>GitHub</h1>
         <span className="sub">Connect the Sentinel GitHub App and choose which repositories it may file issues in.</span>
         {d.mode === "app" && (
           <div className="actions">

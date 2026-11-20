@@ -1,25 +1,31 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, Bucket, Group, SampleEvent, Service } from "../api";
+import { api, Bucket, Group, SampleEvent } from "../api";
 import { bucketKeys, StackedBars } from "../components/charts";
-import { Empty, ErrorNote, Icon, Loading, Seg, StatusBadge, useAsync, useToast } from "../components/ui";
+import { Empty, ErrorNote, Icon, Loading, Seg, StatusBadge, useAsync, useAction } from "../components/ui";
+import { useServices } from "../shared";
 import { ago, fmtFull, fmtNum, LEVEL_COLORS } from "../util";
+import { Queue } from "./AI";
 
-type Tab = "active" | "pending" | "open" | "resolved" | "ignored" | "all";
-const TAB_STATUS: Record<Tab, string> = { active: "open,pending", pending: "pending", open: "open", resolved: "resolved", ignored: "ignored", all: "" };
+type Tab = "active" | "pending" | "open" | "resolved" | "ignored" | "all" | "queue";
+const TAB_STATUS: Record<Exclude<Tab, "queue">, string> = { active: "open,pending", pending: "pending", open: "open", resolved: "resolved", ignored: "ignored", all: "" };
 
 export default function Issues() {
   const [params, setParams] = useSearchParams();
   const tab = (params.get("tab") as Tab) ?? "active";
+  const queue = tab === "queue";
   const service = params.get("service") ?? "";
   const [text, setText] = useState(params.get("q") ?? "");
   const nav = useNavigate();
   const groups = useAsync(
-    () => api.get<Group[]>(`/api/groups?status=${TAB_STATUS[tab]}&service=${encodeURIComponent(service)}&q=${encodeURIComponent(params.get("q") ?? "")}`),
+    () =>
+      queue
+        ? Promise.resolve([] as Group[])
+        : api.get<Group[]>(`/api/groups?status=${TAB_STATUS[tab]}&service=${encodeURIComponent(service)}&q=${encodeURIComponent(params.get("q") ?? "")}`),
     [tab, service, params.get("q")],
     15000,
   );
-  const svcs = useAsync(() => api.get<Service[]>("/api/services"), []);
+  const svcs = useServices();
   const set = (k: string, v: string) => {
     const p = new URLSearchParams(params);
     if (v) p.set(k, v);
@@ -45,26 +51,43 @@ export default function Issues() {
               { value: "resolved", label: "Resolved" },
               { value: "ignored", label: "Ignored" },
               { value: "all", label: "All" },
+              { value: "queue", label: "AI queue" },
             ]}
           />
-          <select value={service} onChange={(e) => set("service", e.target.value)} aria-label="Service">
-            <option value="">All services</option>
-            {(svcs.data ?? []).map((s) => (
-              <option key={s.name}>{s.name}</option>
-            ))}
-          </select>
-          <form
-            className="search"
-            onSubmit={(e) => {
-              e.preventDefault();
-              set("q", text);
-            }}
-          >
-            <Icon.search />
-            <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Filter by title or fingerprint" aria-label="Filter issues" />
-          </form>
+          {!queue && (
+            <>
+              <select value={service} onChange={(e) => set("service", e.target.value)} aria-label="Service">
+                <option value="">All services</option>
+                {(svcs.data ?? []).map((s) => (
+                  <option key={s.name}>{s.name}</option>
+                ))}
+              </select>
+              <form
+                className="search"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  set("q", text);
+                }}
+              >
+                <Icon.search />
+                <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Filter by title or fingerprint" aria-label="Filter issues" />
+              </form>
+            </>
+          )}
         </div>
       </div>
+      {queue ? (
+        <Queue />
+      ) : (
+        <GroupTable groups={groups} onOpen={(id) => nav(`/issues/${id}`)} />
+      )}
+    </>
+  );
+}
+
+function GroupTable({ groups, onOpen }: { groups: { data?: Group[]; error?: string }; onOpen: (id: number) => void }) {
+  return (
+    <>
       <ErrorNote error={groups.error} />
       <div className="card flush">
         {!groups.data ? (
@@ -85,7 +108,7 @@ export default function Issues() {
             </thead>
             <tbody>
               {groups.data.map((g) => (
-                <tr key={g.id} className="clickable" onClick={() => nav(`/issues/${g.id}`)}>
+                <tr key={g.id} className="clickable" onClick={() => onOpen(g.id)}>
                   <td style={{ maxWidth: 480 }}>
                     <div className="truncate" title={g.title}>
                       {g.kind === "down" && <span className="badge bad" style={{ marginRight: 6 }}>outage</span>}
@@ -129,7 +152,7 @@ interface Detail {
 
 export function IssueDetail() {
   const { id } = useParams();
-  const toast = useToast();
+  const run = useAction();
   const d = useAsync(() => api.get<Detail>(`/api/groups/${id}`), [id], 20000);
   const [sampleIdx, setSampleIdx] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
@@ -141,22 +164,17 @@ export function IssueDetail() {
 
   const setStatus = async (status: "resolved" | "ignored" | "open") => {
     setBusy(true);
-    try {
-      await api.post(`/api/groups/${g.id}/status`, { status });
-      const onGH = g.issue_number ? " (and on GitHub)" : "";
-      toast(
-        status === "resolved"
-          ? `Closed${onGH}. If it happens again, the issue is reopened.`
-          : status === "ignored"
-            ? `Ignored${onGH ? ", closed as not planned on GitHub" : ""}. Sentinel will stay quiet about it.`
-            : `Reopened${onGH}`,
-      );
-      d.reload();
-    } catch (e) {
-      toast((e as Error).message, true);
-    } finally {
-      setBusy(false);
-    }
+    const onGH = g.issue_number ? " (and on GitHub)" : "";
+    await run(
+      () => api.post(`/api/groups/${g.id}/status`, { status }),
+      status === "resolved"
+        ? `Closed${onGH}. If it happens again, the issue is reopened.`
+        : status === "ignored"
+          ? `Ignored${onGH ? ", closed as not planned on GitHub" : ""}. Sentinel will stay quiet about it.`
+          : `Reopened${onGH}`,
+    );
+    d.reload();
+    setBusy(false);
   };
   const span = new Date(histogram[histogram.length - 1]?.t ?? g.last_seen).getTime() - new Date(histogram[0]?.t ?? g.first_seen).getTime();
   const bucketMs = histogram.length > 1 ? span / (histogram.length - 1) : 60000;
@@ -203,7 +221,7 @@ export function IssueDetail() {
       </div>
       {g.block_reason && g.status === "pending" && (
         <div className="notice warn" style={{ marginBottom: 16 }}>
-          Not filed yet: {g.block_reason}. <Link to="/services">Configure a repository</Link>.
+          Not filed yet: {g.block_reason}. <Link to="/settings/services">Configure a repository</Link>.
         </div>
       )}
       <div className="grid stats" style={{ marginBottom: 16 }}>

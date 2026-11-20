@@ -1,4 +1,5 @@
 import { createContext, ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { Navigate, NavLink, useLocation, useParams } from "react-router-dom";
 import { RANGES } from "../util";
 import type { GroupStatus } from "../api";
 
@@ -34,6 +35,28 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[], pollMs = 0) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
   return { data, error, loading, reload, setData };
+}
+
+/**
+ * Runs a change and reports a failure as a toast, so callers skip the
+ * try/catch. `ok` is toasted on success (a function gets the result).
+ * Resolves to the result, or undefined when it failed.
+ */
+export function useAction() {
+  const toast = useToast();
+  return useCallback(
+    async <T,>(fn: () => Promise<T>, ok?: string | ((r: T) => string)): Promise<T | undefined> => {
+      try {
+        const r = await fn();
+        if (ok) toast(typeof ok === "function" ? ok(r) : ok);
+        return r;
+      } catch (e) {
+        toast((e as Error).message, true);
+        return undefined;
+      }
+    },
+    [toast],
+  );
 }
 
 // --- toast ---
@@ -140,6 +163,49 @@ export function Seg<T extends string>({ value, options, onChange }: { value: T; 
   );
 }
 
+/**
+ * A page made of tabs, one per sub-page, routed as `${base}/${tab.path}`
+ * (a tab with path "" lives at `base` itself). The tab comes from the
+ * `:tab` route parameter unless the route passes it.
+ */
+export interface SectionTab {
+  path: string;
+  label: string;
+  element: ReactNode;
+  count?: number;
+}
+
+const tabURL = (base: string, path: string) => (path ? `${base}/${path}` : base);
+
+export function Section({ title, base, tabs, tab }: { title: string; base: string; tabs: SectionTab[]; tab?: string }) {
+  const params = useParams();
+  const want = tab ?? params.tab ?? "";
+  const current = tabs.find((t) => t.path === want);
+  if (!current) return <Navigate to={tabURL(base, tabs[0].path)} replace />;
+  return (
+    <>
+      <div className="page-head section-head">
+        <h1>{title}</h1>
+      </div>
+      <nav className="tabs" aria-label={title}>
+        {tabs.map((t) => (
+          <NavLink key={t.path} to={tabURL(base, t.path)} end>
+            {t.label}
+            {t.count ? <span className="count">{t.count}</span> : null}
+          </NavLink>
+        ))}
+      </nav>
+      {current.element}
+    </>
+  );
+}
+
+/** Redirects an old URL to its new place, keeping the query string. */
+export function Moved({ to }: { to: string }) {
+  const { search } = useLocation();
+  return <Navigate to={to + search} replace />;
+}
+
 export function StatusBadge({ status }: { status: GroupStatus }) {
   const cls = { pending: "warn", open: "bad", resolved: "ok", ignored: "" }[status];
   return <span className={"badge " + cls}>{status}</span>;
@@ -174,6 +240,7 @@ export const Icon = {
   search: I("M21 21l-4.35-4.35M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z"),
   uptime: I("M22 12h-4l-3 9L9 3l-3 9H2"),
   dashboards: I("M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z"),
+  settings: I("M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"),
   ai: I("M12 3l1.9 5.8L20 10l-6.1 1.2L12 17l-1.9-5.8L4 10l6.1-1.2zM19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"),
 };
 
