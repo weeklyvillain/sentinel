@@ -64,7 +64,7 @@ export function LogDrawer(p: LogDrawerProps) {
       setBusy(false);
     }
   };
-  const raw = msg.json ? JSON.stringify(msg.json, null, 2) : log.body;
+  const raw = msg.json && msg.format === "json" ? JSON.stringify(msg.json, null, 2) : log.body;
   const shown = find ? fields.filter(([k, v]) => (k + " " + valueText(v)).toLowerCase().includes(find.toLowerCase())) : fields;
 
   return (
@@ -209,8 +209,8 @@ export function LogDrawer(p: LogDrawerProps) {
 
           <section>
             <div className="drawer-label row">
-              {msg.json ? "JSON" : "Raw"}
-              <button className="link small" onClick={() => copy(raw, msg.json ? "JSON" : "Line")} style={{ marginLeft: "auto" }}>
+              {msg.format === "json" ? "JSON" : msg.format === "logfmt" ? "Raw (logfmt)" : "Raw"}
+              <button className="link small" onClick={() => copy(raw, msg.format === "json" ? "JSON" : "Line")} style={{ marginLeft: "auto" }}>
                 copy
               </button>
             </div>

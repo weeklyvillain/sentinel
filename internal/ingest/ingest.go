@@ -352,7 +352,15 @@ func (r *Receiver) logs(ctx context.Context, body []byte, isJSON bool) error {
 				if sevNum == 0 {
 					sevNum = severityFromText(lr.GetSeverityText())
 				}
-				isErr := int32(lr.GetSeverityNumber()) >= minSev || isErrorText(lr.GetSeverityText()) || hasExc
+				sevText, body := severity(lr), anyString(lr.GetBody())
+				// No severity on the record: a logfmt or JSON line may say
+				// its level itself ("level=error").
+				if sevNum == 0 && sevText == "" {
+					if lvl := BodyLevel(body); lvl != "" {
+						sevNum, sevText = severityFromText(lvl), strings.ToUpper(lvl)
+					}
+				}
+				isErr := sevNum >= minSev || isErrorText(sevText) || hasExc
 				ts := r.pickTime(lr.GetTimeUnixNano(), lr.GetObservedTimeUnixNano())
 				rec := Record{Log: store.LogRecord{
 					Time:         ts,
@@ -360,8 +368,8 @@ func (r *Receiver) logs(ctx context.Context, body []byte, isJSON bool) error {
 					Env:          ri.env,
 					Kind:         "log",
 					Severity:     sevNum,
-					SeverityText: severity(lr),
-					Body:         anyString(lr.GetBody()),
+					SeverityText: sevText,
+					Body:         body,
 					TraceID:      hexID(lr.GetTraceId()),
 					SpanID:       hexID(lr.GetSpanId()),
 					Attrs:        attrs,
@@ -376,7 +384,7 @@ func (r *Receiver) logs(ctx context.Context, body []byte, isJSON bool) error {
 						Environment: ri.env,
 						Release:     ri.version,
 						Time:        ts,
-						Severity:    severity(lr),
+						Severity:    sevText,
 						Message:     rec.Log.Body,
 						ExcType:     attrs["exception.type"],
 						ExcMessage:  attrs["exception.message"],
@@ -384,6 +392,22 @@ func (r *Receiver) logs(ctx context.Context, body []byte, isJSON bool) error {
 						TraceID:     rec.Log.TraceID,
 						SpanID:      rec.Log.SpanID,
 						Attributes:  mergeAttrs(ri.attrs, attrs),
+					}
+					// A JSON or logfmt line: the issue is about its message;
+					// the other fields (ts, error, ids…) become attributes,
+					// so they do not make every line a group of its own.
+					if f := StructuredFields(body); f != nil {
+						for _, k := range []string{"msg", "message", "@message", "event"} {
+							if f[k] != "" {
+								rec.Error.Message = f[k]
+								break
+							}
+						}
+						for k, v := range f {
+							if _, taken := rec.Error.Attributes[k]; !taken && len(rec.Error.Attributes) < 200 {
+								rec.Error.Attributes[k] = v
+							}
+						}
 					}
 				}
 				batch = append(batch, rec)
