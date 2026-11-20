@@ -144,7 +144,7 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(schemaDashboards); err != nil {
 		return err
 	}
-	for _, sch := range []string{schemaTraces, schemaGroupsExt, schemaAlerting, schemaMetricHist, schemaFixerRuns} {
+	for _, sch := range []string{schemaTraces, schemaGroupsExt, schemaAlerting, schemaMetricHist, schemaFixerRuns, schemaSavedSearches} {
 		if _, err := s.db.Exec(sch); err != nil {
 			return err
 		}

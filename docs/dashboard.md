@@ -5,10 +5,33 @@ from the OTLP port):
 
 - **Overview** – services up/down, open issues, errors by service, log volume
   by level, firing alarms, and a setup checklist until everything is set up.
-- **Logs** – full-text search over every log line (and error span), filters
-  for service, level, time range, trace id, attributes and "same error";
-  a clickable volume histogram, live tail and pagination. Query syntax: words
-  are prefix-matched and ANDed, `"exact phrase"`, `-exclude`.
+- **Logs** – full-text search over every log line (and error span), with
+  multi-select level and service dropdowns, time range, trace id, attributes
+  and "same error"; a clickable volume histogram, live tail, and older lines
+  that load as you scroll. **Saved searches** are shared and listed most-used
+  first (the time range isn't saved); recent searches are kept per browser.
+  The **Metric** view charts count, rate, unique, sum, avg, min, max or
+  p50–p99 of a field of the matching lines, optionally split by a field, and
+  adds it to a dashboard as a panel. Query syntax (also used by log panels and
+  log-count alarms):
+
+  | Syntax | Meaning |
+  | --- | --- |
+  | `timeout "connection refused" -healthcheck` | words (prefix-matched, ANDed), exact phrases, exclusions |
+  | `service:api level:error` | field filters |
+  | `level>=warn`, `duration_ms>500` | comparisons (`>` `>=` `<` `<=`, or `field:>500`) |
+  | `status!=200` | not equal (a missing field counts as not equal) |
+  | `http.route:/orders/*` | `*` wildcard, case-insensitive |
+  | `user.id:*`, `has:user.id` | the field is present |
+  | `(timeout OR refused) -service:web` | `OR`, parentheses, `NOT` / `-` |
+  | `message:"slow query"` | search only the message, not attributes |
+
+  Built-in fields: `service`, `level`, `severity`, `env`, `kind`, `trace`,
+  `span`, `fingerprint`, `message`. Any other name is an attribute or a field
+  of a JSON log line (`db.table` also matches nested `{"db": {"table": …}}`);
+  prefix it with `@` for an attribute named like a built-in field.
+  logfmt lines are parsed for display only, so their fields can't be filtered
+  yet.
 - **Traces** – every span is stored (see `TRACE_SAMPLE_RATE`); search traces
   by service, operation, minimum duration or errors, and open one as a
   waterfall across services with each span's attributes, events and log
