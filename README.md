@@ -77,37 +77,40 @@ request that says `Fixes #N`. A fix is asked for automatically for each new
 issue of a service with **Auto-fix** on (Settings → Services, off by default),
 or when someone presses **Fix it** on an issue. Only error issues are sent,
 not outages or performance issues. Claude Code runs in one of two places,
-chosen with `AUTOFIX_MODE`:
+chosen under **Settings → GitHub → Automated fixes** (`AUTOFIX_MODE` is the
+default until you pick one there):
 
-### `AUTOFIX_MODE=fixer`: the fixer container next to Sentinel
+### Sentinel's fixer: the fixer container next to Sentinel
 
-`sentinel-fixer` (`Dockerfile.fixer`, the `fixer` Compose profile) runs the
-official Claude Code CLI on the Sentinel server. It signs in with
-**your Claude subscription**: run `claude setup-token` on your own machine
-and put the token in `deploy/.env` as `CLAUDE_CODE_OAUTH_TOKEN` (or set
-`FIXER_ANTHROPIC_API_KEY` to bill an API key instead). Fixes then count
-against your plan's usage limits, which assume ordinary individual use.
-Sentinel never sees or stores the Claude credential, and there is no
-"Sign in with Claude" in the dashboard: Anthropic does not allow other apps to
-collect Claude logins.
+`sentinel-fixer` (`Dockerfile.fixer`, the `fixer` Compose service) runs the
+official Claude Code CLI on the Sentinel server. It starts with
+`docker compose up -d --build` and idles until there is work. Everything
+else is set in the dashboard, under **Settings → GitHub → Sentinel's fixer**:
 
-```bash
-# deploy/.env
-AUTOFIX_MODE=fixer
-FIXER_TOKEN=<openssl rand -hex 32>
-CLAUDE_CODE_OAUTH_TOKEN=<from claude setup-token>
-FIXER_EXTRA_TOOLS=Bash(go test:*)   # test commands the agent may run
-```
+- **Claude sign-in**: your **Claude subscription** (run `claude setup-token`
+  on your own machine and paste the token) or an Anthropic API key, billed
+  per token. Fixes on a subscription count against your plan's usage
+  limits, which assume ordinary individual use. The token is stored in
+  Sentinel's database and only handed to the fixer with each job; the
+  dashboard never shows it again. There is no "Sign in with Claude" button:
+  Anthropic does not allow other apps to collect Claude logins.
+- **Models** for fixes and for investigations (default: Claude Code's).
 
-```bash
-docker compose --profile fixer up -d --build
-```
+Sentinel and the fixer share a generated token through the `fixer-auth`
+volume, so neither needs `FIXER_TOKEN`. Environment variables still work as
+defaults: `CLAUDE_CODE_OAUTH_TOKEN` / `FIXER_ANTHROPIC_API_KEY` sign the
+fixer in when the dashboard has no sign-in, `FIXER_MODEL` /
+`FIXER_ANALYZE_MODEL` are used when no model is set there, and a
+`FIXER_TOKEN` in `deploy/.env` replaces the generated token for both. Test
+commands the agent may run are still set in `.env`, e.g.
+`FIXER_EXTRA_TOOLS=Bash(go test:*)`, together with the toolchains in
+`Dockerfile.fixer`.
 
 The GitHub App also needs **Contents** and **Pull requests** (read and write);
 accept the new permissions on each installation. For each job:
 
-1. The fixer asks Sentinel for work (`POST /fixer/claim`, bearer
-   `FIXER_TOKEN`) and gets the error report (samples, stack traces, tags,
+1. The fixer asks Sentinel for work (`POST /fixer/claim`, bearer the
+   shared token) and gets the error report (samples, stack traces, tags,
    breadcrumbs) and a token that can push to **that one repository** for an
    hour.
 2. It clones the repository and runs `claude -p` on a new branch. Claude may
@@ -122,15 +125,15 @@ accept the new permissions on each installation. For each job:
    an hour counts as failed and can be retried.
 
 Settings → GitHub shows whether the fixer is connected, how it signs in and
-what it is working on. `FIXER_TIMEOUT` (30m), `FIXER_MAX_TURNS` (60) and
-`FIXER_MODEL` tune a run.
+what it is working on; it gets no work while it has no Claude sign-in.
+`FIXER_TIMEOUT` (30m) and `FIXER_MAX_TURNS` (60) tune a run.
 
 ### Investigations: is it worth fixing?
 
 The same container can also do the AI analysis that writes each issue, in
 place of the Anthropic API (Haiku, billed per token): choose **Claude Code in
-the fixer** under Settings → AI (provider `claude-code`; Sentinel needs
-`FIXER_TOKEN`, `AUTOFIX_MODE` can stay `actions`). For every new error the
+the fixer** under Settings → AI (provider `claude-code`; it uses the
+fixer's Claude sign-in, and fixes can still run in GitHub Actions). For every new error the
 fixer clones the service's repository with a read-only token (Contents read
 is enough), and Claude Code reads the code the stack trace points at, writes
 the issue's title, summary, likely cause and next steps, and gives a verdict:
@@ -144,13 +147,13 @@ the issue's title, summary, likely cause and next steps, and gives a verdict:
 
 The verdict, severity and reason are in the issue ("Worth fixing?") and on
 the Issues page. Investigations only read: `Read`, `Glob`, `Grep` and
-`git log/show/blame`. They use `FIXER_ANALYZE_MAX_TURNS` (25) and
-`FIXER_ANALYZE_MODEL` (default: `FIXER_MODEL`). The fix job later gets the
+`git log/show/blame`. They use `FIXER_ANALYZE_MAX_TURNS` (25) and the
+investigation model set in the dashboard (or `FIXER_ANALYZE_MODEL`). The fix job later gets the
 investigation along. When the fixer does not pick an error up within
 20 minutes (or does not finish within 45), its issue is filed with the
 template so nothing waits forever.
 
-### `AUTOFIX_MODE=actions` (default): a workflow in each repository
+### GitHub Actions (default): a workflow in each repository
 
 Sentinel adds the `AUTOFIX_LABEL` label (default `sentinel-autofix`) to the
 GitHub issue and Claude Code runs in the repository's GitHub Actions:
@@ -461,9 +464,10 @@ All configuration is via environment variables. Durations accept Go syntax
 | `TRACE_RETENTION` | `72h` | How long stored spans are kept |
 | `TRACE_SAMPLE_RATE` | `1` | Share of traces stored (0–1, decided per trace id); spans with errors are always stored, request statistics count every span |
 | `PERF_SLOW_P95` | `2s` | p95 of an operation that files a slow-endpoint issue; `0` disables |
-| `AUTOFIX_MODE` | `actions` | Where Claude Code fixes issues: `actions` (a workflow in each repository) or `fixer` (the fixer container) |
+| `AUTOFIX_MODE` | `actions` | Where Claude Code fixes issues until one is picked in the dashboard: `actions` (a workflow in each repository) or `fixer` (the fixer container) |
 | `AUTOFIX_LABEL` | `sentinel-autofix` | Label that starts the fix workflow in the repository (`actions` mode) |
-| `FIXER_TOKEN` | – | Shared secret of Sentinel and the fixer container; enables it for fixes (`AUTOFIX_MODE=fixer`) and investigations (AI provider `claude-code`) |
+| `FIXER_TOKEN` | generated | Shared secret of Sentinel and the fixer container. Without it Sentinel generates one and writes it to `FIXER_TOKEN_FILE` for the fixer |
+| `FIXER_TOKEN_FILE` | – | Where Sentinel writes the fixer's token (`/fixer-auth/token` in the Compose files, a volume both containers mount) |
 | `PERF_N_PLUS_ONE` | `10` | Identical database calls under one span that file an N+1 issue; `0` disables |
 | `MIN_SEVERITY` | `17` | Lowest log `severity_number` treated as an error |
 | `TICK_INTERVAL` | `10s` | Reporter loop interval |

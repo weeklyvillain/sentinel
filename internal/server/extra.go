@@ -189,19 +189,11 @@ func (s *Server) handleUnmerge(w http.ResponseWriter, r *http.Request) {
 //go:embed autofix-workflow.yml
 var autofixWorkflow string
 
-// handleAutofix describes how fixes run: the fixer container's status, or
-// the workflow for repositories with this Sentinel's label and GitHub App
-// bot filled in.
+// handleAutofix describes how fixes run: the mode, the fixer container's
+// status and settings, and the workflow for repositories with this
+// Sentinel's label and GitHub App bot filled in.
 func (s *Server) handleAutofix(w http.ResponseWriter, r *http.Request) {
-	if s.Info.FixMode == "fixer" {
-		writeJSON(w, http.StatusOK, map[string]any{"mode": "fixer", "fixer": s.fixer.snapshot()})
-		return
-	}
-	var fixer *FixerStatus
-	if s.FixerToken != "" {
-		st := s.fixer.snapshot()
-		fixer = &st
-	}
+	fixer := s.fixer.snapshot()
 	label := s.Info.FixLabel
 	if label == "" {
 		label = reporter.DefaultFixLabel
@@ -219,7 +211,8 @@ func (s *Server) handleAutofix(w http.ResponseWriter, r *http.Request) {
 		note = "Sentinel uses a personal access token, so its labels come from that user, not a bot: no bot needs to be allowed"
 	}
 	yml := strings.NewReplacer("__LABEL__", label, "__BOTS__", bots).Replace(autofixWorkflow)
-	writeJSON(w, http.StatusOK, map[string]any{"mode": "actions", "path": ".github/workflows/sentinel-autofix.yml", "workflow": yml, "label": label, "note": note, "fixer": fixer})
+	writeJSON(w, http.StatusOK, map[string]any{"mode": s.fixMode(), "settings": s.fixerView(), "fixer": fixer,
+		"path": ".github/workflows/sentinel-autofix.yml", "workflow": yml, "label": label, "note": note})
 }
 
 // handleRequestFix asks the repository's fix workflow to fix the issue.

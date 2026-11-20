@@ -208,3 +208,26 @@ func TestParseVerdict(t *testing.T) {
 		t.Fatalf("%+v", v)
 	}
 }
+
+// A fixer without its own sign-in uses the one Sentinel sends with the job,
+// which also replaces its own; the token comes from Sentinel's file.
+func TestFixerSignInAndTokenFromSentinel(t *testing.T) {
+	f := newFixer(t, "fix", "")
+	f.cfg.claudeEnv = append(f.cfg.claudeEnv, "CLAUDE_CODE_OAUTH_TOKEN=own")
+	env := strings.Join(f.claudeEnv(&fixjob.Job{Claude: &fixjob.ClaudeAuth{Kind: fixjob.AuthAPIKey, Token: "sk-ant-api-x"}}), "\n")
+	if !strings.Contains(env, "ANTHROPIC_API_KEY=sk-ant-api-x") || strings.Contains(env, "CLAUDE_CODE_OAUTH_TOKEN=own") {
+		t.Fatalf("job sign-in: %s", env)
+	}
+	if env := strings.Join(f.claudeEnv(&fixjob.Job{}), "\n"); !strings.Contains(env, "CLAUDE_CODE_OAUTH_TOKEN=own") {
+		t.Fatalf("own sign-in: %s", env)
+	}
+
+	f.cfg.token, f.cfg.tokenFile = "", filepath.Join(t.TempDir(), "token")
+	if _, err := f.token(); err == nil {
+		t.Fatal("no file yet: want an error")
+	}
+	os.WriteFile(f.cfg.tokenFile, []byte("from-sentinel\n"), 0o600)
+	if tok, err := f.token(); err != nil || tok != "from-sentinel" {
+		t.Fatalf("token: %q %v", tok, err)
+	}
+}

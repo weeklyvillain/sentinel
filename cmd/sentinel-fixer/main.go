@@ -2,9 +2,10 @@
 // queues for it: it clones the repository, runs Claude Code headless on the
 // error, and opens a pull request that says "Fixes #N".
 //
-// It signs in to Claude with CLAUDE_CODE_OAUTH_TOKEN (your subscription; make
-// one with `claude setup-token`) or ANTHROPIC_API_KEY, and asks Sentinel for
-// work with FIXER_TOKEN. Sentinel hands out a token per job that can only push
+// It signs in to Claude with the sign-in set in Sentinel's dashboard, or with
+// its own CLAUDE_CODE_OAUTH_TOKEN (your subscription; make one with `claude
+// setup-token`) or ANTHROPIC_API_KEY. It asks Sentinel for work with
+// FIXER_TOKEN, or the token Sentinel writes to FIXER_TOKEN_FILE. Sentinel hands out a token per job that can only push
 // to and open pull requests in that one repository; Claude itself never sees
 // a GitHub token.
 package main
@@ -36,15 +37,18 @@ const version = "1"
 type config struct {
 	sentinel string
 	token    string
-	workdir  string
-	poll     time.Duration
-	claude   string
-	maxTurns int
-	timeout  time.Duration
-	tools    string
-	model    string
-	gitName  string
-	gitEmail string
+	// tokenFile is read for the token when FIXER_TOKEN is not set; Sentinel
+	// writes it on start.
+	tokenFile string
+	workdir   string
+	poll      time.Duration
+	claude    string
+	maxTurns  int
+	timeout   time.Duration
+	tools     string
+	model     string
+	gitName   string
+	gitEmail  string
 	// Investigations: usually fewer turns, and a cheaper model is fine.
 	analyzeTurns int
 	analyzeModel string
@@ -65,13 +69,14 @@ func env(k, def string) string {
 
 func loadConfig() (config, error) {
 	c := config{
-		sentinel: strings.TrimRight(env("SENTINEL_URL", "http://sentinel:8080"), "/"),
-		token:    os.Getenv("FIXER_TOKEN"),
-		workdir:  env("FIXER_WORKDIR", filepath.Join(os.TempDir(), "sentinel-fixer")),
-		claude:   env("CLAUDE_BIN", "claude"),
-		model:    os.Getenv("FIXER_MODEL"),
-		gitName:  env("FIXER_GIT_NAME", "Sentinel fixer"),
-		gitEmail: env("FIXER_GIT_EMAIL", "sentinel-fixer@users.noreply.github.com"),
+		sentinel:  strings.TrimRight(env("SENTINEL_URL", "http://sentinel:8080"), "/"),
+		token:     os.Getenv("FIXER_TOKEN"),
+		tokenFile: os.Getenv("FIXER_TOKEN_FILE"),
+		workdir:   env("FIXER_WORKDIR", filepath.Join(os.TempDir(), "sentinel-fixer")),
+		claude:    env("CLAUDE_BIN", "claude"),
+		model:     os.Getenv("FIXER_MODEL"),
+		gitName:   env("FIXER_GIT_NAME", "Sentinel fixer"),
+		gitEmail:  env("FIXER_GIT_EMAIL", "sentinel-fixer@users.noreply.github.com"),
 	}
 	var err error
 	if c.poll, err = time.ParseDuration(env("FIXER_POLL", "30s")); err != nil {
@@ -91,8 +96,8 @@ func loadConfig() (config, error) {
 	if extra := os.Getenv("FIXER_EXTRA_TOOLS"); extra != "" {
 		c.tools += "," + extra
 	}
-	if c.token == "" {
-		return c, errors.New("FIXER_TOKEN is required (the same value as Sentinel's FIXER_TOKEN)")
+	if c.token == "" && c.tokenFile == "" {
+		return c, errors.New("set FIXER_TOKEN (the same value as Sentinel's) or FIXER_TOKEN_FILE (the file Sentinel writes it to)")
 	}
 	// Claude Code gets only what it needs: no Sentinel or GitHub secrets.
 	c.claudeEnv = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + env("FIXER_AGENT_HOME", env("HOME", c.workdir)), "DISABLE_AUTOUPDATER=1", "CI=true"}
@@ -103,9 +108,9 @@ func loadConfig() (config, error) {
 	case os.Getenv("ANTHROPIC_API_KEY") != "":
 		c.auth = "api_key"
 		c.claudeEnv = append(c.claudeEnv, "ANTHROPIC_API_KEY="+os.Getenv("ANTHROPIC_API_KEY"))
-	default:
-		return c, errors.New("set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`, uses your Claude subscription) or ANTHROPIC_API_KEY")
 	}
+	// No credential of its own: Sentinel sends the one set in the dashboard
+	// with each job, and holds jobs back until there is one.
 	return c, nil
 }
 
@@ -123,7 +128,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	f := &fixer{cfg: cfg, log: log, http: &http.Client{Timeout: 60 * time.Second}}
-	log.Info("sentinel-fixer started", "sentinel", cfg.sentinel, "auth", cfg.auth, "poll", cfg.poll)
+	auth := cfg.auth
+	if auth == "" {
+		auth = "from Sentinel's dashboard"
+	}
+	log.Info("sentinel-fixer started", "sentinel", cfg.sentinel, "auth", auth, "poll", cfg.poll)
 	f.run(ctx)
 }
 
@@ -153,10 +162,31 @@ func (f *fixer) run(ctx context.Context) {
 	}
 }
 
+// token is FIXER_TOKEN, or what Sentinel wrote to FIXER_TOKEN_FILE. The file
+// is read every time, so a token Sentinel replaces is picked up.
+func (f *fixer) token() (string, error) {
+	if f.cfg.token != "" {
+		return f.cfg.token, nil
+	}
+	b, err := os.ReadFile(f.cfg.tokenFile)
+	if err != nil {
+		return "", fmt.Errorf("reading the token Sentinel shares (is Sentinel running?): %w", err)
+	}
+	t := strings.TrimSpace(string(b))
+	if t == "" {
+		return "", fmt.Errorf("%s is empty", f.cfg.tokenFile)
+	}
+	return t, nil
+}
+
 func (f *fixer) claim(ctx context.Context) (*fixjob.Job, error) {
+	tok, err := f.token()
+	if err != nil {
+		return nil, err
+	}
 	body, _ := json.Marshal(fixjob.Hello{Version: version, Auth: f.cfg.auth})
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, f.cfg.sentinel+"/fixer/claim", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+f.cfg.token)
+	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := f.http.Do(req)
 	if err != nil {
@@ -178,9 +208,13 @@ func (f *fixer) claim(ctx context.Context) (*fixjob.Job, error) {
 }
 
 func (f *fixer) report(ctx context.Context, id int64, res fixjob.Result) error {
+	tok, err := f.token()
+	if err != nil {
+		return err
+	}
 	body, _ := json.Marshal(res)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/fixer/jobs/%d/result", f.cfg.sentinel, id), bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+f.cfg.token)
+	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := f.http.Do(req)
 	if err != nil {
@@ -212,6 +246,9 @@ func (f *fixer) work(ctx context.Context, job *fixjob.Job) fixjob.Result {
 		if job.Token != "" {
 			msg = strings.ReplaceAll(msg, job.Token, "[REDACTED]")
 		}
+		if job.Claude != nil && job.Claude.Token != "" {
+			msg = strings.ReplaceAll(msg, job.Claude.Token, "[REDACTED]")
+		}
 		log.Warn("job failed", "err", msg)
 		return fixjob.Result{Attempt: job.Attempt, AnalysisID: job.AnalysisID, Status: fixjob.StatusFailed, Error: msg}
 	}
@@ -237,7 +274,7 @@ func (f *fixer) fix(ctx context.Context, job *fixjob.Job, log *slog.Logger) (fix
 		return fixjob.Result{}, err
 	}
 
-	out, err := f.runClaude(ctx, dir, prompt(job), f.cfg.tools, f.cfg.maxTurns, f.cfg.model)
+	out, err := f.runClaude(ctx, job, dir, prompt(job), f.cfg.tools, f.cfg.maxTurns, f.cfg.model)
 	if err != nil {
 		return fixjob.Result{}, err
 	}
@@ -310,7 +347,27 @@ SENTINEL_RESULT: {"fixed": true or false, "title": "<pull request title, under 7
 		job.Repo, job.IssueNumber, job.Brief)
 }
 
-func (f *fixer) runClaude(ctx context.Context, dir, p, tools string, maxTurns int, model string) (string, error) {
+// claudeEnv is the agent's environment for a job: the sign-in Sentinel sent
+// with it, or the fixer's own.
+func (f *fixer) claudeEnv(job *fixjob.Job) []string {
+	if job.Claude == nil || job.Claude.Token == "" {
+		// Sentinel holds jobs back while neither has a sign-in.
+		return f.cfg.claudeEnv
+	}
+	env := make([]string, 0, len(f.cfg.claudeEnv)+1)
+	for _, kv := range f.cfg.claudeEnv {
+		if !strings.HasPrefix(kv, "CLAUDE_CODE_OAUTH_TOKEN=") && !strings.HasPrefix(kv, "ANTHROPIC_API_KEY=") {
+			env = append(env, kv)
+		}
+	}
+	return append(env, job.Claude.Env())
+}
+
+func (f *fixer) runClaude(ctx context.Context, job *fixjob.Job, dir, p, tools string, maxTurns int, model string) (string, error) {
+	env := f.claudeEnv(job)
+	if job.Model != "" {
+		model = job.Model
+	}
 	ctx, cancel := context.WithTimeout(ctx, f.cfg.timeout)
 	defer cancel()
 	args := []string{"-p", p, "--output-format", "json", "--max-turns", strconv.Itoa(maxTurns), "--allowedTools", tools}
@@ -319,7 +376,7 @@ func (f *fixer) runClaude(ctx context.Context, dir, p, tools string, maxTurns in
 	}
 	cmd := exec.CommandContext(ctx, f.cfg.claude, args...)
 	cmd.Dir = dir
-	cmd.Env = f.cfg.claudeEnv
+	cmd.Env = env
 	if err := asAgent(cmd, dir); err != nil {
 		return "", fmt.Errorf("handing the checkout to the agent user: %w", err)
 	}
