@@ -153,11 +153,10 @@ func Load() (Config, error) {
 	if c.GitHubAppID != 0 && len(c.GitHubAppKey) == 0 {
 		return c, fmt.Errorf("config: GITHUB_APP_ID is set but GITHUB_APP_PRIVATE_KEY(_FILE) is missing")
 	}
+	// Who may sign in is set in the dashboard (Settings → Access);
+	// ALLOWED_USERS and ALLOWED_ORG add to it.
 	switch c.DashboardAuth {
 	case "github":
-		if len(c.AllowedUsers) == 0 && c.AllowedOrg == "" {
-			return c, fmt.Errorf("config: DASHBOARD_AUTH=github needs ALLOWED_USERS and/or ALLOWED_ORG (or DASHBOARD_AUTH=none for local use only)")
-		}
 	case "none":
 	default:
 		return c, fmt.Errorf("config: DASHBOARD_AUTH must be github or none, got %q", c.DashboardAuth)

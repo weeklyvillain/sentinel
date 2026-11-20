@@ -190,15 +190,18 @@ func TestGitHubSignInAllowList(t *testing.T) {
 
 func TestSignInDeniedAndStateChecked(t *testing.T) {
 	h := newHarness(t, AuthConfig{Mode: "github", AllowedUsers: []string{"someone-else"}}, "octocat")
-	if resp := h.signIn("good-code"); resp.StatusCode != 403 {
+	if resp := h.signIn("good-code"); resp.StatusCode != 302 || !strings.Contains(resp.Header.Get("Location"), "not+allowed") {
 		t.Fatalf("not on allow-list: %d", resp.StatusCode)
 	}
-	if resp, _ := h.do("GET", "/auth/callback?code=good-code&state=forged", "", false); resp.StatusCode != 400 {
-		t.Fatalf("forged state: %d", resp.StatusCode)
+	if resp, _ := h.do("GET", "/auth/callback?code=good-code&state=forged", "", false); resp.StatusCode != 302 || !strings.Contains(resp.Header.Get("Location"), "error=") {
+		t.Fatalf("forged state: %d %s", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if _, body := h.do("GET", "/api/me", "", false); !strings.Contains(body, `"signed_in":false`) {
+		t.Fatalf("a forged sign-in made a session: %s", body)
 	}
 	org := newHarness(t, AuthConfig{Mode: "github", AllowedOrg: "acme"}, "octocat")
-	if resp := org.signIn("good-code"); resp.StatusCode != 302 {
-		t.Fatalf("org member: %d", resp.StatusCode)
+	if resp := org.signIn("good-code"); resp.StatusCode != 302 || resp.Header.Get("Location") != "/" {
+		t.Fatalf("org member: %d %s", resp.StatusCode, resp.Header.Get("Location"))
 	}
 }
 

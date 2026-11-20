@@ -112,7 +112,7 @@ function RunList({ onOpen }: { onOpen: (id: number) => void }) {
       <div className="row" style={{ margin: "0 0 12px" }}>
         <span className="small muted">
           Every job Sentinel's fixer ran with Claude Code: fixes and investigations, what it did and what it used. Set it up under{" "}
-          <Link to="/settings/github">Settings → GitHub</Link>.
+          <Link to="/settings/fixer">Settings → Fixer</Link>.
         </span>
         <div className="row" style={{ marginLeft: "auto" }}>
           <select value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Kind">

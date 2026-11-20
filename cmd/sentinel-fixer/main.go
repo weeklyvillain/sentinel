@@ -284,6 +284,9 @@ func (f *fixer) work(ctx context.Context, job *fixjob.Job) fixjob.Result {
 }
 
 func (f *fixer) fix(ctx context.Context, job *fixjob.Job, log *slog.Logger, rl *runLog) (fixjob.Result, error) {
+	if len(job.Related) > 0 {
+		return f.fixMulti(ctx, job, log, rl)
+	}
 	dir := filepath.Join(f.cfg.workdir, fmt.Sprintf("job-%d-%d", job.ID, job.Attempt))
 	os.RemoveAll(dir)
 	defer os.RemoveAll(dir)
@@ -302,18 +305,7 @@ func (f *fixer) fix(ctx context.Context, job *fixjob.Job, log *slog.Logger, rl *
 		return fixjob.Result{}, err
 	}
 
-	tools := f.cfg.tools
-	var allowed []string
-	for _, c := range job.Commands {
-		if validCommand(c) {
-			tools += ",Bash(" + c + ":*)"
-			allowed = append(allowed, c)
-		}
-	}
-	if len(allowed) > 0 {
-		rl.step("Claude may run: %s", strings.Join(allowed, ", "))
-	}
-	out, err := f.runClaude(ctx, job, rl, dir, prompt(job), tools, f.cfg.maxTurns, f.cfg.model)
+	out, err := f.runClaude(ctx, job, rl, dir, prompt(job), f.fixTools(job, rl), f.cfg.maxTurns, f.cfg.model)
 	if err != nil {
 		return fixjob.Result{}, err
 	}
@@ -370,6 +362,30 @@ func (f *fixer) fix(ctx context.Context, job *fixjob.Job, log *slog.Logger, rl *
 	return fixjob.Result{Status: fixjob.StatusPR, PRNumber: num, PRURL: url, Summary: verdict.Summary, Diffstat: stat}, nil
 }
 
+// fixTools is what Claude may use in a fix job: reading and editing, the
+// job's commands, and the permission mode (logged).
+func (f *fixer) fixTools(job *fixjob.Job, rl *runLog) string {
+	tools := f.cfg.tools
+	var allowed []string
+	for _, c := range job.Commands {
+		if validCommand(c) {
+			tools += ",Bash(" + c + ":*)"
+			allowed = append(allowed, c)
+		}
+	}
+	switch job.Permissions {
+	case fixjob.PermAll:
+		rl.step("Permissions: everything (no checks)")
+	case fixjob.PermAuto:
+		rl.step("Permissions: auto mode (Claude runs what it needs; risky actions are blocked)")
+	default:
+		if len(allowed) > 0 {
+			rl.step("Claude may run: %s", strings.Join(allowed, ", "))
+		}
+	}
+	return tools
+}
+
 // prompt is the task for Claude Code. The brief is telemetry: data, not
 // instructions.
 func prompt(job *fixjob.Job) string {
@@ -424,6 +440,15 @@ func (f *fixer) runClaude(ctx context.Context, job *fixjob.Job, rl *runLog, dir,
 	shown := model
 	if shown == "" {
 		shown = "default model"
+	}
+	// Investigations always only read, whatever the fix jobs may do.
+	if job.Kind != fixjob.KindAnalyze {
+		switch job.Permissions {
+		case fixjob.PermAll:
+			args = append(args, "--permission-mode", "bypassPermissions")
+		case fixjob.PermAuto:
+			args = append(args, "--permission-mode", "auto")
+		}
 	}
 	if validEffort(job.Effort) && job.Effort != "" {
 		args = append(args, "--effort", job.Effort)

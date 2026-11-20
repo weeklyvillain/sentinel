@@ -212,6 +212,8 @@ type InstallationInfo struct {
 		Type  string `json:"type"`
 	} `json:"account"`
 	RepositorySelection string `json:"repository_selection"`
+	// Permissions the installation granted, e.g. {"contents": "write"}.
+	Permissions map[string]string `json:"permissions,omitempty"`
 }
 
 // GetInstallation verifies an installation belongs to this app.

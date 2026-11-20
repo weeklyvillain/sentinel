@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -269,6 +270,9 @@ func (d *DryRun) FindByMarker(_ context.Context, marker string) (*Issue, error) 
 
 // PullRef is a pull request that references an issue.
 type PullRef struct {
+	// Repo is owner/name; pull requests of other repositories that mention
+	// the issue (a fix across repositories) are listed too.
+	Repo   string `json:"repo,omitempty"`
 	Number int    `json:"number"`
 	URL    string `json:"url"`
 	Title  string `json:"title"`
@@ -320,16 +324,20 @@ func (c *Client) LinkedPRs(ctx context.Context, number int) ([]PullRef, error) {
 	if err := c.do(ctx, http.MethodGet, fmt.Sprintf("%s/issues/%d/timeline?per_page=100", c.repoPath(), number), nil, &events); err != nil {
 		return nil, err
 	}
-	seen := map[int]bool{}
+	seen := map[string]bool{}
 	out := []PullRef{}
 	for _, e := range events {
 		is := e.Source.Issue
-		if e.Event != "cross-referenced" || is.PullRequest == nil || seen[is.Number] ||
-			(is.Repository.FullName != "" && !strings.EqualFold(is.Repository.FullName, c.FullName())) {
+		repo := is.Repository.FullName
+		if repo == "" {
+			repo = c.FullName()
+		}
+		key := strings.ToLower(repo) + "#" + strconv.Itoa(is.Number)
+		if e.Event != "cross-referenced" || is.PullRequest == nil || seen[key] {
 			continue
 		}
-		seen[is.Number] = true
-		out = append(out, PullRef{Number: is.Number, URL: is.HTMLURL, Title: is.Title, State: is.State, Merged: is.PullRequest.MergedAt != nil})
+		seen[key] = true
+		out = append(out, PullRef{Repo: repo, Number: is.Number, URL: is.HTMLURL, Title: is.Title, State: is.State, Merged: is.PullRequest.MergedAt != nil})
 	}
 	return out, nil
 }

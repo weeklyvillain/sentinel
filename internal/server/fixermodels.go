@@ -14,7 +14,7 @@ import (
 )
 
 // The models the fixer's Claude sign-in can use, for the model pickers in
-// Settings → GitHub. Claude Code has no command that lists them, so
+// Settings → Fixer. Claude Code has no command that lists them, so
 // Sentinel asks the Anthropic Models API with the sign-in set in the
 // dashboard. Claude Code's aliases always work.
 

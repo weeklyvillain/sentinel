@@ -22,7 +22,6 @@ services:
     environment:
       SENTINEL_DB: /data/sentinel.db
       PUBLIC_URL: https://${SENTINEL_DOMAIN:?set SENTINEL_DOMAIN in .env}
-      INGEST_TOKEN: ${INGEST_TOKEN:?set INGEST_TOKEN in .env}
       GITHUB_APP_PRIVATE_KEY_FILE: /secrets/github-app.pem
       # Sentinel writes the fixer's token here (or FIXER_TOKEN from .env).
       FIXER_TOKEN_FILE: /fixer-auth/token
