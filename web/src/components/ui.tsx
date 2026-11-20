@@ -206,6 +206,76 @@ export function Moved({ to }: { to: string }) {
   return <Navigate to={to + search} replace />;
 }
 
+/** Milliseconds of a relative range such as "15m", "6h" or "7d". */
+export function rangeMs(r: string): number {
+  const m = /^(\d+)([mhd])$/.exec(r);
+  if (!m) return 3600_000;
+  return +m[1] * { m: 60_000, h: 3600_000, d: 86400_000 }[m[2] as "m" | "h" | "d"];
+}
+
+/** The current address with a relative ?range= turned into fixed from/to. */
+export function pinnedURL(): string {
+  const u = new URL(location.href);
+  const r = u.searchParams.get("range");
+  if (r && !u.searchParams.get("from")) {
+    const to = Date.now();
+    u.searchParams.delete("range");
+    u.searchParams.set("from", String(to - rangeMs(r)));
+    u.searchParams.set("to", String(to));
+  }
+  return u.toString();
+}
+
+/**
+ * Copies the current address (filters, range and all). With pin, a second
+ * button copies it with the time range fixed, so the link shows exactly
+ * what you see now instead of "the last hour" whenever it is opened.
+ */
+export function CopyLink({ label = "Copy link", pin = false }: { label?: string; pin?: boolean }) {
+  const toast = useToast();
+  const copy = async (url: string, what: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      toast(what);
+    } catch {
+      toast("Could not copy; copy the address bar instead", true);
+    }
+  };
+  return (
+    <span className="copy-link">
+      <button className="ghost" onClick={() => copy(location.href, "Link copied. It opens this view with the same filters and time range.")} title="Copy a link to this view">
+        🔗 {label}
+      </button>
+      {pin && (
+        <button className="ghost" onClick={() => copy(pinnedURL(), "Link copied with this exact time window.")} title="Copy a link to this exact time window">
+          ⏱
+        </button>
+      )}
+    </span>
+  );
+}
+
+/** Query parameters for a range: "abs:<from>-<to>" (ms) or a relative one. */
+export function rangeParams(range: string): { range?: string; from?: string; to?: string } {
+  const m = /^abs:(\d+)-(\d+)$/.exec(range);
+  return m ? { from: m[1], to: m[2] } : { range };
+}
+
+/** The range a page shows: fixed from/to in the URL win over ?range=. */
+export function pageRange(params: URLSearchParams, def: string): string {
+  const from = params.get("from");
+  const to = params.get("to");
+  if (from && to && /^\d+$/.test(from) && /^\d+$/.test(to)) return `abs:${from}-${to}`;
+  return params.get("range") ?? def;
+}
+
+export function RangeLabel({ range }: { range: string }) {
+  const m = /^abs:(\d+)-(\d+)$/.exec(range);
+  if (!m) return null;
+  const f = (ms: string) => new Date(+ms).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return <span className="badge accent" title="A fixed time window from a shared link">{f(m[1])} – {f(m[2])}</span>;
+}
+
 export function StatusBadge({ status }: { status: GroupStatus }) {
   const cls = { pending: "warn", open: "bad", resolved: "ok", ignored: "" }[status];
   return <span className={"badge " + cls}>{status}</span>;
@@ -241,6 +311,7 @@ export const Icon = {
   uptime: I("M22 12h-4l-3 9L9 3l-3 9H2"),
   dashboards: I("M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z"),
   settings: I("M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"),
+  traces: I("M3 6h10M7 12h10M11 18h10M3 6v0M7 12v0"),
   ai: I("M12 3l1.9 5.8L20 10l-6.1 1.2L12 17l-1.9-5.8L4 10l6.1-1.2zM19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"),
 };
 

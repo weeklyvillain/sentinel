@@ -186,6 +186,24 @@ func (a *App) InstallationToken(ctx context.Context, installationID int64) (stri
 	return out.Token, nil
 }
 
+// RepoToken mints a token for one repository of an installation (about an
+// hour): with write, it can push and open pull requests (the app needs the
+// Contents and Pull requests permissions); without, it can only read code.
+func (a *App) RepoToken(ctx context.Context, installationID int64, repoName string, write bool) (string, error) {
+	var out struct {
+		Token string `json:"token"`
+	}
+	perms := map[string]string{"contents": "read", "metadata": "read"}
+	if write {
+		perms = map[string]string{"contents": "write", "pull_requests": "write", "metadata": "read"}
+	}
+	in := map[string]any{"repositories": []string{repoName}, "permissions": perms}
+	if err := a.asApp(ctx, http.MethodPost, fmt.Sprintf("/app/installations/%d/access_tokens", installationID), in, &out); err != nil {
+		return "", err
+	}
+	return out.Token, nil
+}
+
 // InstallationInfo describes an installation.
 type InstallationInfo struct {
 	ID      int64 `json:"id"`
@@ -249,17 +267,27 @@ func (a *App) InstallationRepos(ctx context.Context, id int64) ([]RepoInfo, erro
 
 // InstallURL is where users go to install the app and pick repositories.
 func (a *App) InstallURL(ctx context.Context, state string) (string, error) {
-	slug := a.Slug
-	if slug == "" {
-		var out struct {
-			Slug string `json:"slug"`
-		}
-		if err := a.asApp(ctx, http.MethodGet, "/app", nil, &out); err != nil {
-			return "", err
-		}
-		a.Slug, slug = out.Slug, out.Slug
+	slug, err := a.AppSlug(ctx)
+	if err != nil {
+		return "", err
 	}
 	return fmt.Sprintf("%s/apps/%s/installations/new?state=%s", a.web(), url.PathEscape(slug), url.QueryEscape(state)), nil
+}
+
+// AppSlug returns the app's slug, looked up via GET /app if not configured.
+// Its bot account is "<slug>[bot]".
+func (a *App) AppSlug(ctx context.Context) (string, error) {
+	if a.Slug != "" {
+		return a.Slug, nil
+	}
+	var out struct {
+		Slug string `json:"slug"`
+	}
+	if err := a.asApp(ctx, http.MethodGet, "/app", nil, &out); err != nil {
+		return "", err
+	}
+	a.Slug = out.Slug
+	return out.Slug, nil
 }
 
 // ClientFor returns an issue client for repo backed by installation tokens.

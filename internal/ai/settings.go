@@ -17,18 +17,34 @@ import (
 // Settings choose and configure the provider. They start from the AI_*
 // environment variables and can be changed in the dashboard.
 type Settings struct {
-	Provider string `json:"provider"` // anthropic | openai | none
+	Provider string `json:"provider"` // anthropic | openai | claude-code | none
 	Model    string `json:"model"`
 	BaseURL  string `json:"base_url"` // openai: e.g. http://ollama:11434/v1
 	// APIKey overrides ANTHROPIC_API_KEY / OPENAI_API_KEY when set.
 	APIKey   string `json:"api_key,omitempty"`
 	TimeoutS int    `json:"timeout_s"`
+	// SkipNoise: when the investigation says an error is not worth fixing,
+	// ignore it instead of filing an issue (claude-code only).
+	SkipNoise bool `json:"skip_noise"`
+}
+
+// ProviderClaudeCode hands analyses to the fixer container, which
+// investigates with Claude Code (the user's subscription) and the code.
+const ProviderClaudeCode = "claude-code"
+
+// Remote is the provider whose analyses are done elsewhere (the fixer
+// container claims them from the queue). Draft is never called on it.
+type Remote struct{}
+
+func (Remote) Name() string { return "claude-code (fixer)" }
+func (Remote) Draft(context.Context, Input) (Draft, error) {
+	return Draft{}, errors.New("analyses are done by the fixer container")
 }
 
 // Validate checks the settings.
 func (s Settings) Validate() error {
 	switch s.Provider {
-	case "anthropic", "none":
+	case "anthropic", "none", ProviderClaudeCode:
 	case "openai":
 		if s.Model == "" {
 			return errors.New("a model is required for an OpenAI-compatible provider")
@@ -37,7 +53,7 @@ func (s Settings) Validate() error {
 			return errors.New("base URL must start with http:// or https://")
 		}
 	default:
-		return fmt.Errorf("provider must be anthropic, openai or none, got %q", s.Provider)
+		return fmt.Errorf("provider must be anthropic, openai, claude-code or none, got %q", s.Provider)
 	}
 	if s.TimeoutS < 5 || s.TimeoutS > 3600 {
 		return errors.New("timeout must be between 5 and 3600 seconds")
@@ -57,6 +73,8 @@ func Build(s Settings, envKey string) Provider {
 	switch s.Provider {
 	case "anthropic":
 		p = NewAnthropic(key, s.Model, "")
+	case ProviderClaudeCode:
+		return Remote{}
 	case "openai":
 		p = &OpenAICompat{BaseURL: s.BaseURL, APIKey: key, Model: s.Model,
 			HTTP: &http.Client{Timeout: time.Duration(s.TimeoutS)*time.Second + 10*time.Second}}
@@ -112,6 +130,12 @@ func (w *Switchable) Settings() Settings {
 	defer w.mu.RUnlock()
 	return w.settings
 }
+
+// Remote reports whether analyses are done by the fixer container.
+func (w *Switchable) Remote() bool { return w.Settings().Provider == ProviderClaudeCode }
+
+// SkipNoise reports whether errors judged not worth fixing are ignored.
+func (w *Switchable) SkipNoise() bool { return w.Settings().SkipNoise }
 
 // HasEnvKey reports whether the environment holds an API key for provider.
 func (w *Switchable) HasEnvKey(provider string) bool { return w.envKey(provider) != "" }

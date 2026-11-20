@@ -144,6 +144,11 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(schemaDashboards); err != nil {
 		return err
 	}
+	for _, sch := range []string{schemaTraces, schemaGroupsExt, schemaAlerting, schemaMetricHist} {
+		if _, err := s.db.Exec(sch); err != nil {
+			return err
+		}
+	}
 	cols := []struct{ table, col, def string }{
 		{"groups", "repo", "TEXT NOT NULL DEFAULT ''"},
 		{"groups", "block_reason", "TEXT NOT NULL DEFAULT ''"},
@@ -155,6 +160,30 @@ func (s *Store) migrate() error {
 		// as down when it goes quiet (opt-in, from the Uptime page).
 		{"services", "issues", "INTEGER NOT NULL DEFAULT 1"},
 		{"services", "watch", "INTEGER NOT NULL DEFAULT 0"},
+		{"groups", "first_release", "TEXT NOT NULL DEFAULT ''"},
+		{"groups", "last_release", "TEXT NOT NULL DEFAULT ''"},
+		{"groups", "regressed_release", "TEXT NOT NULL DEFAULT ''"},
+		{"groups", "snooze_until", "INTEGER NOT NULL DEFAULT 0"},
+		{"groups", "snooze_count", "INTEGER NOT NULL DEFAULT 0"},
+		{"groups", "snooze_release", "TEXT NOT NULL DEFAULT ''"},
+		// The fingerprint the event computed to, so merged groups can be split again.
+		{"samples", "fingerprint", "TEXT NOT NULL DEFAULT ''"},
+		// Alarms: how long the condition must hold before firing.
+		{"alarms", "for_s", "INTEGER NOT NULL DEFAULT 0"},
+		{"alarms", "pending_since", "INTEGER NOT NULL DEFAULT 0"},
+		// Automated fixes.
+		{"services", "autofix", "INTEGER NOT NULL DEFAULT 0"},
+		{"groups", "fix_state", "TEXT NOT NULL DEFAULT ''"},
+		{"groups", "fix_requested_at", "INTEGER NOT NULL DEFAULT 0"},
+		{"groups", "fix_attempts", "INTEGER NOT NULL DEFAULT 0"},
+		{"groups", "fix_pr_number", "INTEGER NOT NULL DEFAULT 0"},
+		{"groups", "fix_pr_url", "TEXT NOT NULL DEFAULT ''"},
+		{"groups", "fix_checked_at", "INTEGER NOT NULL DEFAULT 0"},
+		{"groups", "fix_started_at", "INTEGER NOT NULL DEFAULT 0"},
+		{"groups", "fix_summary", "TEXT NOT NULL DEFAULT ''"},
+		{"groups", "triage_verdict", "TEXT NOT NULL DEFAULT ''"},
+		{"groups", "triage_severity", "TEXT NOT NULL DEFAULT ''"},
+		{"groups", "triage_reason", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, c := range cols {
 		if err := s.addColumn(c.table, c.col, c.def); err != nil {

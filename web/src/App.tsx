@@ -8,6 +8,10 @@ import { MeCtx, SharedData, useMe, useStatus } from "./shared";
 const Overview = lazy(() => import("./pages/Overview"));
 const Logs = lazy(() => import("./pages/Logs"));
 const Issues = lazy(() => import("./pages/Issues"));
+const Traces = lazy(() => import("./pages/Traces"));
+const TraceView = lazy(() => import("./pages/Traces").then((m) => ({ default: m.TraceView })));
+const SLOs = lazy(() => import("./pages/SLOs"));
+const Silences = lazy(() => import("./pages/Silences"));
 const IssueDetail = lazy(() => import("./pages/Issues").then((m) => ({ default: m.IssueDetail })));
 const Metrics = lazy(() => import("./pages/Metrics"));
 const Services = lazy(() => import("./pages/Services"));
@@ -77,6 +81,7 @@ function ShellBody() {
   const nav = [
     { to: "/", label: "Overview", icon: Icon.overview, end: true },
     { to: "/logs", label: "Logs", icon: Icon.logs },
+    { to: "/traces", label: "Traces", icon: Icon.traces },
     { to: "/issues", label: "Issues", icon: Icon.issues, count: analyzing },
     { to: "/dashboards", label: "Dashboards", icon: Icon.dashboards },
     { to: "/alerts", label: "Alerts", icon: Icon.alarms, count: firing + checksDown },
@@ -89,6 +94,8 @@ function ShellBody() {
   const alertTabs: SectionTab[] = [
     { path: "alarms", label: "Alarms", element: <Alarms />, count: firing },
     { path: "uptime", label: "Uptime", element: <Uptime />, count: checksDown },
+    { path: "slos", label: "SLOs", element: <SLOs /> },
+    { path: "silences", label: "Maintenance", element: <Silences /> },
   ];
   const settingsTabs: SectionTab[] = [
     { path: "services", label: "Services", element: <Services /> },
@@ -134,6 +141,8 @@ function ShellBody() {
             <Route path="/logs" element={<Logs />} />
             <Route path="/issues" element={<Issues />} />
             <Route path="/issues/:id" element={<IssueDetail />} />
+            <Route path="/traces" element={<Traces />} />
+            <Route path="/traces/:id" element={<TraceView />} />
             <Route path="/dashboards" element={<Section title="Dashboards" base="/dashboards" tab="" tabs={dashTabs} />} />
             <Route path="/dashboards/explore" element={<Section title="Dashboards" base="/dashboards" tab="explore" tabs={dashTabs} />} />
             <Route path="/dashboards/:id" element={<DashboardView />} />

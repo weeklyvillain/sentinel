@@ -111,6 +111,10 @@ var ErrBadAction = errors.New(`action must be "resolve", "ignore" or "reopen"`)
 // SetGroupStatus applies a dashboard action to a group and its GitHub issue.
 // GitHub is changed first: if that fails, nothing changes here.
 func (r *Reporter) SetGroupStatus(ctx context.Context, id int64, action, by string) (store.Group, error) {
+	return r.setGroupStatus(ctx, id, action, by, "")
+}
+
+func (r *Reporter) setGroupStatus(ctx context.Context, id int64, action, by, note string) (store.Group, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	g, err := r.Store.GetGroupByID(ctx, id)
@@ -160,7 +164,11 @@ func (r *Reporter) SetGroupStatus(ctx context.Context, id int64, action, by stri
 			if action == ActionIgnore {
 				reason, verb = "not_planned", "Closed as not planned (Sentinel will stay quiet about it)"
 			}
-			if err := gh.Comment(ctx, g.IssueNumber, verb+" "+who+"."); err != nil {
+			msg := verb + " " + who + "."
+			if note != "" {
+				msg += " " + note
+			}
+			if err := gh.Comment(ctx, g.IssueNumber, msg); err != nil {
 				return g, err
 			}
 			if err := gh.Close(ctx, g.IssueNumber, reason); err != nil {
@@ -169,6 +177,9 @@ func (r *Reporter) SetGroupStatus(ctx context.Context, id int64, action, by stri
 		}
 	}
 	if err := r.Store.SetStatus(ctx, g.ID, status, g.Count); err != nil {
+		return g, err
+	}
+	if err := r.Store.ClearSnooze(ctx, g.ID); err != nil {
 		return g, err
 	}
 	if err := r.Store.MarkChecked(ctx, g.ID, now); err != nil {

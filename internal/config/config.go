@@ -32,6 +32,19 @@ type Config struct {
 
 	LogRetention    time.Duration // LOG_RETENTION, default 7d
 	MetricRetention time.Duration // METRIC_RETENTION, default 7d
+	TraceRetention  time.Duration // TRACE_RETENTION, default 3d
+
+	// Traces.
+	TraceSampleRate float64       // TRACE_SAMPLE_RATE, share of traces stored (0-1, default 1; errors are always kept)
+	PerfSlowP95     time.Duration // PERF_SLOW_P95, p95 of an endpoint that files a performance issue (default 2s; 0 = off)
+	PerfNPlusOne    int           // PERF_N_PLUS_ONE, repeated identical queries under one span that file an N+1 issue (default 10; 0 = off)
+
+	FixLabel string // AUTOFIX_LABEL, the label that starts the repository's fix workflow (default sentinel-autofix)
+	// AUTOFIX_MODE: "actions" (label the issue; a workflow in the repository
+	// fixes it) or "fixer" (the sentinel-fixer container next to Sentinel).
+	FixMode string
+	// FIXER_TOKEN: the shared secret the fixer container authenticates with.
+	FixerToken string
 
 	// GitHub App (recommended).
 	GitHubAppID           int64  // GITHUB_APP_ID
@@ -94,6 +107,28 @@ func Load() (Config, error) {
 	c.DownAfter = p.dur("DOWN_AFTER", 5*time.Minute)
 	c.LogRetention = p.dur("LOG_RETENTION", 7*24*time.Hour)
 	c.MetricRetention = p.dur("METRIC_RETENTION", 7*24*time.Hour)
+	c.TraceRetention = p.dur("TRACE_RETENTION", 3*24*time.Hour)
+	c.TraceSampleRate = p.float("TRACE_SAMPLE_RATE", 1)
+	if c.TraceSampleRate < 0 || c.TraceSampleRate > 1 {
+		p.errs = append(p.errs, "TRACE_SAMPLE_RATE: must be between 0 and 1")
+	}
+	c.PerfSlowP95 = p.dur("PERF_SLOW_P95", 2*time.Second)
+	c.PerfNPlusOne = p.int("PERF_N_PLUS_ONE", 10)
+	c.FixLabel = env("AUTOFIX_LABEL", "sentinel-autofix")
+	c.FixMode = strings.ToLower(env("AUTOFIX_MODE", "actions"))
+	c.FixerToken = os.Getenv("FIXER_TOKEN")
+	if c.FixerToken != "" && len(c.FixerToken) < 16 {
+		p.errs = append(p.errs, "FIXER_TOKEN must be at least 16 characters (openssl rand -hex 32)")
+	}
+	switch c.FixMode {
+	case "actions":
+	case "fixer":
+		if c.FixerToken == "" {
+			p.errs = append(p.errs, "AUTOFIX_MODE=fixer needs FIXER_TOKEN (openssl rand -hex 32)")
+		}
+	default:
+		p.errs = append(p.errs, "AUTOFIX_MODE must be actions or fixer")
+	}
 	c.AITimeout = p.dur("AI_TIMEOUT", 60*time.Second)
 	c.DryRun = p.bool("DRY_RUN", false)
 	c.GitHubAppID = int64(p.int("GITHUB_APP_ID", 0))
@@ -125,9 +160,12 @@ func Load() (Config, error) {
 		return c, fmt.Errorf("config: DASHBOARD_AUTH must be github or none, got %q", c.DashboardAuth)
 	}
 	switch c.AIProvider {
-	case "anthropic", "openai", "none", "template":
+	case "anthropic", "openai", "none", "template", "claude-code":
 	default:
-		return c, fmt.Errorf("config: AI_PROVIDER must be anthropic, openai or none, got %q", c.AIProvider)
+		return c, fmt.Errorf("config: AI_PROVIDER must be anthropic, openai, claude-code or none, got %q", c.AIProvider)
+	}
+	if c.AIProvider == "claude-code" && c.FixerToken == "" {
+		return c, fmt.Errorf("config: AI_PROVIDER=claude-code needs the fixer container and FIXER_TOKEN")
 	}
 	if c.AIProvider == "openai" && c.AIModel == "" {
 		return c, fmt.Errorf("config: AI_MODEL is required for AI_PROVIDER=openai")
@@ -182,6 +220,19 @@ func (p *parser) dur(k string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+func (p *parser) float(k string, def float64) float64 {
+	v := os.Getenv(k)
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		p.errs = append(p.errs, fmt.Sprintf("%s: %v", k, err))
+		return def
+	}
+	return f
 }
 
 func (p *parser) bool(k string, def bool) bool {

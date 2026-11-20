@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -66,6 +67,9 @@ func (s *Server) readAISettings(r *http.Request) (ai.Settings, error) {
 	st.Model, st.BaseURL = strings.TrimSpace(st.Model), strings.TrimSpace(st.BaseURL)
 	if st.APIKey == "" && !in.ClearAPIKey {
 		st.APIKey = s.AI.Settings().APIKey
+	}
+	if st.Provider == ai.ProviderClaudeCode && s.FixerToken == "" {
+		return st, errors.New("Claude Code analyses run in the fixer container: set FIXER_TOKEN for Sentinel and start the fixer first")
 	}
 	return st, st.Validate()
 }

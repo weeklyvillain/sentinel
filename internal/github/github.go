@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -265,3 +266,77 @@ func (d *DryRun) FindByMarker(_ context.Context, marker string) (*Issue, error) 
 	}
 	return nil, nil
 }
+
+// PullRef is a pull request that references an issue.
+type PullRef struct {
+	Number int    `json:"number"`
+	URL    string `json:"url"`
+	Title  string `json:"title"`
+	State  string `json:"state"` // open | closed
+	Merged bool   `json:"merged"`
+}
+
+// FixAPI is what automated fixing needs: a label that starts the fix
+// workflow in the repository, and the pull requests that reference an issue.
+// Implemented by Client and DryRun.
+type FixAPI interface {
+	// Relabel removes and re-adds label, so the repository's "labeled"
+	// workflow trigger fires even when the issue had it already.
+	Relabel(ctx context.Context, number int, label string) error
+	// LinkedPRs returns the pull requests of the same repository that
+	// mention the issue (e.g. "Fixes #12"), oldest first.
+	LinkedPRs(ctx context.Context, number int) ([]PullRef, error)
+}
+
+func (c *Client) Relabel(ctx context.Context, number int, label string) error {
+	path := fmt.Sprintf("%s/issues/%d/labels", c.repoPath(), number)
+	err := c.do(ctx, http.MethodDelete, path+"/"+url.PathEscape(label), nil, nil)
+	var ge *Error
+	if err != nil && !(errors.As(err, &ge) && ge.Status == http.StatusNotFound) {
+		return err
+	}
+	// Adding a label the repository does not have yet creates it.
+	return c.do(ctx, http.MethodPost, path, map[string]any{"labels": []string{label}}, nil)
+}
+
+func (c *Client) LinkedPRs(ctx context.Context, number int) ([]PullRef, error) {
+	var events []struct {
+		Event  string `json:"event"`
+		Source struct {
+			Issue struct {
+				Number      int    `json:"number"`
+				HTMLURL     string `json:"html_url"`
+				Title       string `json:"title"`
+				State       string `json:"state"`
+				PullRequest *struct {
+					MergedAt *time.Time `json:"merged_at"`
+				} `json:"pull_request"`
+				Repository struct {
+					FullName string `json:"full_name"`
+				} `json:"repository"`
+			} `json:"issue"`
+		} `json:"source"`
+	}
+	if err := c.do(ctx, http.MethodGet, fmt.Sprintf("%s/issues/%d/timeline?per_page=100", c.repoPath(), number), nil, &events); err != nil {
+		return nil, err
+	}
+	seen := map[int]bool{}
+	out := []PullRef{}
+	for _, e := range events {
+		is := e.Source.Issue
+		if e.Event != "cross-referenced" || is.PullRequest == nil || seen[is.Number] ||
+			(is.Repository.FullName != "" && !strings.EqualFold(is.Repository.FullName, c.FullName())) {
+			continue
+		}
+		seen[is.Number] = true
+		out = append(out, PullRef{Number: is.Number, URL: is.HTMLURL, Title: is.Title, State: is.State, Merged: is.PullRequest.MergedAt != nil})
+	}
+	return out, nil
+}
+
+func (d *DryRun) Relabel(_ context.Context, number int, label string) error {
+	d.log().Info("DRY_RUN relabel issue (would start the fix workflow)", "number", number, "label", label)
+	return nil
+}
+
+func (d *DryRun) LinkedPRs(_ context.Context, number int) ([]PullRef, error) { return nil, nil }

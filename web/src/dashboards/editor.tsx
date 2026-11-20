@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { api, MetricSeriesInfo as MetricSeries, qs } from "../api";
 import { Modal, useAsync } from "../components/ui";
-import { Panel, PanelQuery, PanelType, UNITS } from "./model";
+import { Panel, PanelQuery, PanelType, UNITS, Variable, VarValues } from "./model";
 import { PanelBody, ROW_PX, usePanelData } from "./panels";
 
 const TYPES: { value: PanelType; label: string; hint: string }[] = [
@@ -9,7 +9,10 @@ const TYPES: { value: PanelType; label: string; hint: string }[] = [
   { value: "stat", label: "Stat", hint: "One big number with a sparkline" },
   { value: "gauge", label: "Gauge", hint: "A value within a range" },
   { value: "bar", label: "Bar list", hint: "Compare series, largest first" },
+  { value: "table", label: "Table", hint: "Last, average, min and max per series" },
+  { value: "heatmap", label: "Heatmap", hint: "Distribution over time (histograms, latency)" },
   { value: "text", label: "Text", hint: "A note" },
+  { value: "row", label: "Row", hint: "A collapsible section header" },
 ];
 
 const AGGS = [
@@ -20,11 +23,44 @@ const AGGS = [
   { value: "sum", label: "sum" },
   { value: "rate", label: "rate per second (counters)" },
   { value: "count", label: "count of points" },
+  { value: "p50", label: "p50 (histograms)" },
+  { value: "p90", label: "p90 (histograms)" },
+  { value: "p95", label: "p95 (histograms)" },
+  { value: "p99", label: "p99 (histograms)" },
+  { value: "heatmap", label: "bucket counts (heatmap)" },
+];
+
+const STATS = [
+  { value: "rate", label: "requests per second" },
+  { value: "count", label: "requests" },
+  { value: "errors", label: "failed requests" },
+  { value: "error_rate", label: "error rate (%)" },
+  { value: "avg", label: "average latency (ms)" },
+  { value: "p50", label: "p50 latency (ms)" },
+  { value: "p90", label: "p90 latency (ms)" },
+  { value: "p95", label: "p95 latency (ms)" },
+  { value: "p99", label: "p99 latency (ms)" },
+  { value: "heatmap", label: "latency heatmap" },
 ];
 
 const LETTERS = "ABCDEF";
 
-export function PanelEditor({ initial, range, service, onSave, onClose }: { initial: Panel; range: string; service: string; onSave: (p: Panel) => void; onClose: () => void }) {
+export function PanelEditor({
+  initial,
+  range,
+  vars,
+  variables,
+  onSave,
+  onClose,
+}: {
+  initial: Panel;
+  range: string;
+  vars: VarValues;
+  variables: Variable[];
+  onSave: (p: Panel) => void;
+  onClose: () => void;
+}) {
+  const service = vars.service?.[0] ?? "";
   const [p, setP] = useState<Panel>(initial);
   const set = (x: Partial<Panel>) => setP((v) => ({ ...v, ...x }));
   const setO = (x: Partial<Panel["options"]>) => setP((v) => ({ ...v, options: { ...v.options, ...x } }));
@@ -32,7 +68,7 @@ export function PanelEditor({ initial, range, service, onSave, onClose }: { init
   const catalog = useAsync(() => api.get<MetricSeries[]>("/api/metrics"), []);
   const [tick, setTick] = useState(0);
   const [preview, setPreview] = useState(p);
-  const pd = usePanelData(preview, range, service, tick);
+  const pd = usePanelData(preview, range, vars, tick);
   const refresh = () => {
     setPreview(p);
     setTick((t) => t + 1);
@@ -81,7 +117,11 @@ export function PanelEditor({ initial, range, service, onSave, onClose }: { init
             </label>
           </div>
 
-          {p.type === "text" ? (
+          {p.type === "row" ? (
+            <label className="check" style={{ marginTop: 12 }}>
+              <input type="checkbox" checked={!!o.collapsed} onChange={(e) => setO({ collapsed: e.target.checked })} /> Collapsed when the dashboard opens
+            </label>
+          ) : p.type === "text" ? (
             <label className="field" style={{ marginTop: 12 }}>
               Text
               <textarea rows={6} value={o.text ?? ""} onChange={(e) => setO({ text: e.target.value })} />
@@ -96,6 +136,7 @@ export function PanelEditor({ initial, range, service, onSave, onClose }: { init
                   services={services}
                   catalog={catalog.data ?? []}
                   serviceVar={service}
+                  variables={variables}
                   onChange={(x) => setQ(i, x)}
                   onRemove={p.queries.length > 1 ? () => set({ queries: p.queries.filter((_, j) => j !== i) }) : undefined}
                 />
@@ -180,8 +221,8 @@ export function PanelEditor({ initial, range, service, onSave, onClose }: { init
               </div>
             </>
           )}
-          <h4 className="pe-h">Size</h4>
-          <div className="row" style={{ gap: 12 }}>
+          {p.type !== "row" && <h4 className="pe-h">Size</h4>}
+          <div className="row" style={{ gap: 12, display: p.type === "row" ? "none" : undefined }}>
             <label className="field" style={{ flex: 1 }}>
               Width
               <select value={p.w} onChange={(e) => set({ w: Number(e.target.value) })}>
@@ -227,6 +268,7 @@ function QueryRow({
   services,
   catalog,
   serviceVar,
+  variables,
   onChange,
   onRemove,
 }: {
@@ -234,6 +276,7 @@ function QueryRow({
   services: string[];
   catalog: MetricSeries[];
   serviceVar: string;
+  variables: Variable[];
   onChange: (x: Partial<PanelQuery>) => void;
   onRemove?: () => void;
 }) {
@@ -256,10 +299,18 @@ function QueryRow({
         <select value={q.source} onChange={(e) => onChange({ source: e.target.value as never })} style={{ width: 110 }}>
           <option value="metrics">Metric</option>
           <option value="logs">Log count</option>
+          <option value="spans">Requests (traces)</option>
         </select>
         <select value={q.service ?? ""} onChange={(e) => onChange({ service: e.target.value })} style={{ flex: 1, minWidth: 140 }} aria-label="Service">
           <option value="">All services</option>
           <option value="$service">$service (dashboard picker)</option>
+          {variables
+            .filter((v) => v.name !== "service")
+            .map((v) => (
+              <option key={v.name} value={"$" + v.name}>
+                ${v.name} (variable)
+              </option>
+            ))}
           {services.map((s) => (
             <option key={s} value={s}>
               {s}
@@ -276,7 +327,27 @@ function QueryRow({
           </button>
         )}
       </div>
-      {q.source === "logs" ? (
+      {q.source === "spans" ? (
+        <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+          <input value={q.operation ?? ""} onChange={(e) => onChange({ operation: e.target.value })} placeholder="operation (all), e.g. GET /api/cart" style={{ flex: 2, minWidth: 180 }} aria-label="Operation" />
+          <select value={q.stat ?? "rate"} onChange={(e) => onChange({ stat: e.target.value as never })} style={{ flex: 1 }} aria-label="Statistic">
+            {STATS.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
+          </select>
+          <span className="small muted">Split by</span>
+          {["service", "operation"].map((k) => {
+            const on = (q.group_by ?? []).includes(k);
+            return (
+              <button key={k} className={"small" + (on ? " primary" : "")} onClick={() => onChange({ group_by: on ? (q.group_by ?? []).filter((x) => x !== k) : [...(q.group_by ?? []), k] })}>
+                {k}
+              </button>
+            );
+          })}
+        </div>
+      ) : q.source === "logs" ? (
         <div className="row" style={{ gap: 8 }}>
           <input value={q.q ?? ""} onChange={(e) => onChange({ q: e.target.value })} placeholder='Search, e.g. timeout -"health"' style={{ flex: 1 }} />
           <select value={q.min_severity ?? 0} onChange={(e) => onChange({ min_severity: Number(e.target.value) })}>
@@ -350,8 +421,11 @@ function QueryRow({
                   <option value="=">=</option>
                   <option value="!=">≠</option>
                 </select>
-                <input list={`vals-${q.id}-${i}`} value={f.value} onChange={(e) => setFilter(i, { value: e.target.value })} placeholder="value (a|b for several)" style={{ flex: 1 }} />
+                <input list={`vals-${q.id}-${i}`} value={f.value} onChange={(e) => setFilter(i, { value: e.target.value })} placeholder="value (a|b, or $variable)" style={{ flex: 1 }} />
                 <datalist id={`vals-${q.id}-${i}`}>
+                  {variables.map((v) => (
+                    <option key={"$" + v.name} value={"$" + v.name} />
+                  ))}
                   {values.map((v) => (
                     <option key={v} value={v} />
                   ))}

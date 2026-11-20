@@ -17,9 +17,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"mime"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -59,6 +61,9 @@ type Receiver struct {
 	Tokens []string
 	Log    *slog.Logger
 	Now    func() time.Time
+	// SpanSampleRate is the share of traces stored for the trace view (0-1).
+	// Error spans are always stored; request statistics count every span.
+	SpanSampleRate float64
 
 	deltaOnce sync.Once
 	delta     *deltaTracker
@@ -232,8 +237,8 @@ func fixJSONIDs(body []byte) ([]byte, error) {
 }
 
 type resInfo struct {
-	service, env string
-	attrs        map[string]string
+	service, env, version string
+	attrs                 map[string]string
 }
 
 // key identifies the sending process by all its resource attributes.
@@ -259,6 +264,7 @@ func resourceInfo(res *resourcepb.Resource) resInfo {
 	if ri.env == "" {
 		ri.env = ri.attrs["deployment.environment"]
 	}
+	ri.version = ri.attrs["service.version"]
 	return ri
 }
 
@@ -268,6 +274,21 @@ func (r *Receiver) heartbeat(ctx context.Context, seen map[string]bool, ri resIn
 	}
 	seen[ri.service] = true
 	r.Sink.Heartbeat(ctx, ri.service, ri.env, r.now())
+	if rs, ok := r.Sink.(ReleaseSink); ok && ri.version != "" {
+		rs.Release(ctx, ri.service, ri.env, ri.version, r.now())
+	}
+}
+
+// ReleaseSink is optionally implemented by a Sink to learn which version
+// (service.version) of a service is sending, for release tracking.
+type ReleaseSink interface {
+	Release(ctx context.Context, service, env, version string, t time.Time)
+}
+
+// SpanSink is optionally implemented by a Sink to store every span (not
+// only errors) for the trace view and performance data.
+type SpanSink interface {
+	Spans(ctx context.Context, spans []store.Span)
 }
 
 var errorWords = map[string]bool{
@@ -347,6 +368,7 @@ func (r *Receiver) logs(ctx context.Context, body []byte, isJSON bool) error {
 						Kind:        event.KindLog,
 						Service:     ri.service,
 						Environment: ri.env,
+						Release:     ri.version,
 						Time:        ts,
 						Severity:    severity(lr),
 						Message:     rec.Log.Body,
@@ -406,6 +428,8 @@ func (r *Receiver) traces(ctx context.Context, body []byte, isJSON bool) error {
 	}
 	seen := map[string]bool{}
 	var batch []Record
+	spanSink, keepSpans := r.Sink.(SpanSink)
+	var spans []store.Span
 	for _, rs := range req.GetResourceSpans() {
 		ri := resourceInfo(rs.GetResource())
 		r.heartbeat(ctx, seen, ri)
@@ -419,11 +443,14 @@ func (r *Receiver) traces(ctx context.Context, body []byte, isJSON bool) error {
 					}
 				}
 				isErr := sp.GetStatus().GetCode() == tracepb.Status_STATUS_CODE_ERROR
+				attrs := map[string]string{}
+				putAttrs(attrs, sp.GetAttributes())
+				if keepSpans {
+					spans = append(spans, r.storeSpan(ri, sp, attrs, isErr || excEv != nil))
+				}
 				if !isErr && excEv == nil {
 					continue
 				}
-				attrs := map[string]string{}
-				putAttrs(attrs, sp.GetAttributes())
 				exc := map[string]string{}
 				if excEv != nil {
 					putAttrs(exc, excEv.GetAttributes())
@@ -432,6 +459,7 @@ func (r *Receiver) traces(ctx context.Context, body []byte, isJSON bool) error {
 					Kind:        event.KindSpan,
 					Service:     ri.service,
 					Environment: ri.env,
+					Release:     ri.version,
 					Time:        r.pickTime(sp.GetEndTimeUnixNano(), sp.GetStartTimeUnixNano()),
 					Severity:    "ERROR",
 					Message:     sp.GetStatus().GetMessage(),
@@ -454,8 +482,61 @@ func (r *Receiver) traces(ctx context.Context, body []byte, isJSON bool) error {
 			}
 		}
 	}
+	if len(spans) > 0 {
+		spanSink.Spans(ctx, spans)
+	}
 	r.Sink.Records(ctx, batch)
 	return nil
+}
+
+var spanKinds = map[tracepb.Span_SpanKind]string{
+	tracepb.Span_SPAN_KIND_INTERNAL: "internal", tracepb.Span_SPAN_KIND_SERVER: "server", tracepb.Span_SPAN_KIND_CLIENT: "client",
+	tracepb.Span_SPAN_KIND_PRODUCER: "producer", tracepb.Span_SPAN_KIND_CONSUMER: "consumer",
+}
+
+// storeSpan converts a span for storage. Spans of errors are always kept;
+// other traces are kept with probability SpanSampleRate, decided by trace id
+// so a trace is kept or dropped as a whole.
+func (r *Receiver) storeSpan(ri resInfo, sp *tracepb.Span, attrs map[string]string, isErr bool) store.Span {
+	start := r.pickTime(sp.GetStartTimeUnixNano(), sp.GetEndTimeUnixNano())
+	dur := int64(0)
+	if sp.GetEndTimeUnixNano() > sp.GetStartTimeUnixNano() && sp.GetStartTimeUnixNano() > 0 {
+		dur = int64(sp.GetEndTimeUnixNano()-sp.GetStartTimeUnixNano()) / 1000
+	}
+	out := store.Span{
+		TraceID: hexID(sp.GetTraceId()), SpanID: hexID(sp.GetSpanId()), ParentID: hexID(sp.GetParentSpanId()),
+		Service: ri.service, Env: ri.env, Version: ri.version, Name: sp.GetName(), Kind: spanKinds[sp.GetKind()],
+		Start: start, DurationUS: dur, Status: int(sp.GetStatus().GetCode()), StatusMsg: sp.GetStatus().GetMessage(),
+		Attrs: attrs,
+	}
+	if out.Kind == "" {
+		out.Kind = "internal"
+	}
+	for i, ev := range sp.GetEvents() {
+		if i == 32 {
+			break
+		}
+		ea := map[string]string{}
+		putAttrs(ea, ev.GetAttributes())
+		out.Events = append(out.Events, store.SpanEvent{Time: r.pickTime(ev.GetTimeUnixNano()), Name: ev.GetName(), Attrs: ea})
+	}
+	out.Sampled = isErr || sampled(out.TraceID, r.SpanSampleRate)
+	return out
+}
+
+// sampled decides from the trace id (its last 8 bytes are random).
+func sampled(traceID string, rate float64) bool {
+	if rate >= 1 {
+		return true
+	}
+	if rate <= 0 || len(traceID) < 16 {
+		return false
+	}
+	v, err := strconv.ParseUint(traceID[len(traceID)-16:], 16, 64)
+	if err != nil {
+		return false
+	}
+	return float64(v) < rate*float64(math.MaxUint64)
 }
 
 func (r *Receiver) metrics(ctx context.Context, body []byte, isJSON bool) error {

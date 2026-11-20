@@ -65,7 +65,7 @@ func run(log *slog.Logger) error {
 	}
 
 	router := &reporter.GitHubRouter{Store: st, App: app, Token: cfg.GitHubToken, DefaultRepo: cfg.GitHubRepo,
-		Labels: cfg.GitHubLabels, BaseURL: cfg.GitHubAPI}
+		Labels: cfg.GitHubLabels, BaseURL: cfg.GitHubAPI, WebURL: cfg.GitHubWebURL}
 	if cfg.DryRun {
 		router.DryRun = &github.DryRun{Log: log}
 		log.Info("DRY_RUN enabled: GitHub calls are logged, not sent")
@@ -99,13 +99,17 @@ func run(log *slog.Logger) error {
 		UpdateInterval:   cfg.UpdateInterval,
 		MaxIssuesPerHour: cfg.MaxIssuesPerHour,
 		DownAfter:        cfg.DownAfter,
+		PerfSlowP95:      cfg.PerfSlowP95,
+		FixLabel:         cfg.FixLabel,
+		FixMode:          cfg.FixMode,
 	}, st, provider, router, log)
+	rep.Processor.NPlusOne = cfg.PerfNPlusOne
 	rep.Notify = dispatcher
 	rep.Analyzer = analyzer
 	alarms := &alarm.Evaluator{Store: st, Notify: dispatcher, Log: log}
 	prober := &uptime.Prober{Store: st, Handler: rep, Log: log}
 
-	recv := &ingest.Receiver{Sink: rep.Processor, MinSeverity: cfg.MinSeverity, Tokens: cfg.IngestTokens, Log: log}
+	recv := &ingest.Receiver{Sink: rep.Processor, MinSeverity: cfg.MinSeverity, Tokens: cfg.IngestTokens, Log: log, SpanSampleRate: cfg.TraceSampleRate}
 	if len(cfg.IngestTokens) == 0 && !loopback(cfg.OTLPAddr) {
 		log.Warn("INGEST_TOKEN is not set: anyone who can reach " + cfg.OTLPAddr + " can send telemetry. Set INGEST_TOKEN when the OTLP port is reachable from other machines.")
 	}
@@ -124,12 +128,12 @@ func run(log *slog.Logger) error {
 	}
 	srv := &server.Server{
 		Store: st, App: app, PublicURL: cfg.PublicURL, Dispatcher: dispatcher, Prober: prober, Static: static, Log: log,
-		AI: provider, AIEnvKey: envKey, Analyzer: analyzer, Puller: &ai.Puller{}, Groups: rep,
+		AI: provider, AIEnvKey: envKey, Analyzer: analyzer, Puller: &ai.Puller{}, Groups: rep, FixerToken: cfg.FixerToken,
 		Auth: server.AuthConfig{Mode: cfg.DashboardAuth, AllowedUsers: cfg.AllowedUsers, AllowedOrg: cfg.AllowedOrg},
 		Info: server.Info{
 			DryRun: cfg.DryRun, TokenMode: app == nil && cfg.GitHubToken != "", EnvDefaultRepo: cfg.GitHubRepo,
 			AIProvider: provider.Name(), LogRetention: cfg.LogRetention.String(), MetricRetention: cfg.MetricRetention.String(),
-			DownAfter: cfg.DownAfter.String(), OTLPAddr: cfg.OTLPAddr,
+			DownAfter: cfg.DownAfter.String(), OTLPAddr: cfg.OTLPAddr, TraceRetention: cfg.TraceRetention.String(), FixLabel: cfg.FixLabel, FixMode: cfg.FixMode,
 		},
 	}
 
@@ -182,6 +186,11 @@ func janitor(ctx context.Context, st *store.Store, cfg config.Config, log *slog.
 			log.Error("retention prune", "err", err)
 		} else if n > 0 {
 			log.Info("retention prune", "deleted", n)
+		}
+		if n, err := st.PruneTraces(ctx, now.Add(-cfg.TraceRetention)); err != nil && ctx.Err() == nil {
+			log.Error("trace retention prune", "err", err)
+		} else if n > 0 {
+			log.Info("trace retention prune", "deleted", n)
 		}
 		select {
 		case <-ctx.Done():

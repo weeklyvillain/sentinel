@@ -24,6 +24,9 @@ type Config struct {
 	StateCheck       time.Duration // how often to poll an issue's state while events arrive (default 2m)
 	MaxIssuesPerHour int           // cap on new issues per rolling hour (default 10; <0 = unlimited)
 	DownAfter        time.Duration // silence before a service is down; 0 disables
+	PerfSlowP95      time.Duration // p95 that makes an endpoint a performance issue; 0 disables
+	FixLabel         string        // label that starts the repository's fix workflow (default sentinel-autofix)
+	FixMode          string        // actions (label the issue) | fixer (the sentinel-fixer container)
 }
 
 func (c *Config) defaults() {
@@ -64,6 +67,7 @@ type Reporter struct {
 	StartedAt time.Time
 
 	capLogged time.Time
+	perfAt    time.Time
 	// mu serializes Tick with uptime-check transitions.
 	mu sync.Mutex
 }
@@ -110,6 +114,9 @@ func (r *Reporter) Tick(ctx context.Context) {
 		{"new-issues", r.createIssues},
 		{"updates", r.updateOpen},
 		{"resolved-regressions", r.reopenResolved},
+		{"snoozes", r.endSnoozes},
+		{"fixes", r.trackFixes},
+		{"performance", r.detectPerf},
 	}
 	for _, s := range steps {
 		if ctx.Err() != nil {
@@ -154,6 +161,9 @@ func (r *Reporter) detectDown(ctx context.Context) error {
 			continue
 		}
 		r.Log.Warn("service down", "service", sv.Name, "last_seen", sv.LastSeen)
+		if err := r.Store.RecordOutageStart(ctx, sv.Name, sv.LastSeen); err != nil {
+			return err
+		}
 		g, err := r.Processor.Record(ctx, DownEvent(sv.Name, sv.Env, sv.LastSeen, now))
 		if err != nil {
 			return err
@@ -207,6 +217,9 @@ func (r *Reporter) handleRecoveries(ctx context.Context) error {
 				}
 				r.Log.Info("service recovered before an issue was filed", "service", sv.Name, "outage", outage)
 			}
+		}
+		if err := r.Store.RecordOutageEnd(ctx, sv.Name, sv.RecoveredAt); err != nil {
+			return err
 		}
 		if err := r.Store.ClearRecovery(ctx, sv.Name); err != nil {
 			return err
@@ -274,6 +287,20 @@ func (r *Reporter) createIssues(ctx context.Context) error {
 			}
 			pre = &d
 		}
+		if pre != nil && pre.Triage != nil {
+			t := pre.Triage
+			if err := r.Store.SetTriage(ctx, g.ID, t.Verdict, t.Severity, t.Reason); err != nil {
+				return err
+			}
+			g.TriageVerdict = t.Verdict
+			if t.Verdict == ai.VerdictIgnore && skipNoise(r.AI) {
+				r.Log.Info("not filed: the investigation says it is not worth fixing", "group", g.ID, "service", g.Service, "reason", t.Reason)
+				if err := r.Store.SetStatus(ctx, g.ID, store.StatusIgnored, g.Count); err != nil {
+					return err
+				}
+				continue
+			}
+		}
 		if err := r.fileGroup(ctx, g, now, pre); err != nil {
 			r.Log.Error("file issue", "fingerprint", g.Fingerprint, "err", err)
 		}
@@ -327,7 +354,7 @@ func (r *Reporter) fileGroup(ctx context.Context, g store.Group, now time.Time, 
 		provider = draft.Provider
 	}
 	draft = sanitizeDraft(draft)
-	body := IssueBody(g, draft, samples, provider)
+	body := IssueBody(g, draft, samples, provider, r.issueExtra(ctx, g, samples))
 	iss, err := gh.CreateIssue(ctx, draft.Title, body)
 	if err != nil {
 		return err
@@ -336,7 +363,8 @@ func (r *Reporter) fileGroup(ctx context.Context, g store.Group, now time.Time, 
 		return err
 	}
 	r.Log.Info("created issue", "repo", repo, "issue", iss.Number, "url", iss.HTMLURL, "service", g.Service, "count", g.Count, "title", draft.Title)
-	g.Repo, g.IssueNumber, g.IssueURL = repo, iss.Number, iss.HTMLURL
+	g.Repo, g.IssueNumber, g.IssueURL, g.Status = repo, iss.Number, iss.HTMLURL, store.StatusOpen
+	r.autofixNew(ctx, gh, g, "automatically (auto-fix is on for "+g.Service+")")
 	r.notify(notify.Event{Type: notify.IssueCreated, Service: g.Service, Group: groupInfo(g),
 		Issue:   &notify.IssueInfo{Repo: repo, Number: iss.Number, URL: iss.HTMLURL, Title: draft.Title},
 		Message: fmt.Sprintf("New issue for %s: %s (%d occurrences)", g.Service, draft.Title, g.Count)})
@@ -411,6 +439,13 @@ func (r *Reporter) regress(ctx context.Context, gh github.API, g store.Group, sa
 	}
 	if err := r.Store.SetStatus(ctx, g.ID, store.StatusOpen, -1); err != nil {
 		return err
+	}
+	if err := r.Store.SetRegressedRelease(ctx, g.ID, g.LastRelease); err != nil {
+		return err
+	}
+	// A merged fix that did not hold: try again (if auto-fix is on).
+	if g.FixState == store.FixMerged {
+		r.autofixNew(ctx, gh, g, "again, because the error came back after the fix was merged")
 	}
 	r.Log.Info("regression: reopened issue", "issue", g.IssueNumber, "service", g.Service)
 	r.notify(notify.Event{Type: notify.IssueRegression, Service: g.Service, Group: groupInfo(g),
