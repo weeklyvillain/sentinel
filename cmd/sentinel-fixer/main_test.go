@@ -111,7 +111,7 @@ func TestFixerOpensPullRequest(t *testing.T) {
 	defer gh.Close()
 
 	fs := &fakeSentinel{job: &fixjob.Job{ID: 7, Attempt: 1, Repo: "acme/app", IssueNumber: 12, Title: "runtime error: integer divide by zero",
-		Brief: "panic in Div", Branch: "sentinel-fix-12-1", CloneURL: bare, APIURL: gh.URL, Token: "repo-token", RunID: 99}}
+		Brief: "panic in Div", Branch: "sentinel-fix-12-1", CloneURL: bare, APIURL: gh.URL, Token: "repo-token", RunID: 99, Commands: []string{"go test", "go test; rm -rf /"}}}
 	sentinel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer secret-fixer-token" {
 			http.Error(w, "no", http.StatusUnauthorized)
@@ -172,7 +172,7 @@ func TestFixerOpensPullRequest(t *testing.T) {
 		kinds = append(kinds, l.Kind+": "+strings.SplitN(l.Text, "\n", 2)[0])
 	}
 	joined := strings.Join(kinds, "\n")
-	for _, want := range []string{"step: Cloning acme/app", "step: Claude Code started (model claude-test-1)", "text: Reading the code.", "tool: Read calc.go", "tool_result: package calc", "step: Pushing sentinel-fix-12-1", "step: Opened https://github.com/acme/app/pull/42"} {
+	for _, want := range []string{"step: Cloning acme/app", "step: Claude Code started (model claude-test-1)", "text: Reading the code.", "tool: Read calc.go", "tool_result: package calc", "step: Claude may run: go test\n", "step: Pushing sentinel-fix-12-1", "step: Opened https://github.com/acme/app/pull/42"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("log has no %q:\n%s", want, joined)
 		}
@@ -261,5 +261,18 @@ func TestFixerSignInAndTokenFromSentinel(t *testing.T) {
 	os.WriteFile(f.cfg.tokenFile, []byte("from-sentinel\n"), 0o600)
 	if tok, err := f.token(); err != nil || tok != "from-sentinel" {
 		t.Fatalf("token: %q %v", tok, err)
+	}
+}
+
+func TestValidCommand(t *testing.T) {
+	for _, ok := range []string{"go test", "go build", "npm test", "gofmt"} {
+		if !validCommand(ok) {
+			t.Errorf("%q rejected", ok)
+		}
+	}
+	for _, bad := range []string{"", "go test; rm -rf /", "go test && x", "a|b", "$(x)", "go test *", "a\nb"} {
+		if validCommand(bad) {
+			t.Errorf("%q allowed", bad)
+		}
 	}
 }

@@ -56,8 +56,27 @@ type config struct {
 	claudeEnv    []string
 }
 
-// Read-only git plus file editing; add test commands with FIXER_EXTRA_TOOLS,
-// e.g. "Bash(go test:*),Bash(npm test:*)".
+// agentEnvPassthrough are toolchain settings the agent's commands get from
+// the fixer's environment (Dockerfile.fixer sets some).
+var agentEnvPassthrough = []string{"CGO_ENABLED", "GOTOOLCHAIN", "GOPROXY", "GOFLAGS", "GONOSUMDB", "GOPRIVATE", "NODE_OPTIONS", "npm_config_cache"}
+
+// validEffort: what `claude --effort` takes.
+func validEffort(e string) bool {
+	switch e {
+	case "", "low", "medium", "high", "xhigh", "max":
+		return true
+	}
+	return false
+}
+
+// validCommand mirrors Sentinel's check: a prefix without shell syntax.
+func validCommand(c string) bool {
+	return c != "" && len(c) <= 100 && !strings.ContainsAny(c, ";&|`$<>()\\\"'*\n\r\t")
+}
+
+// Read-only git plus file editing. Commands Claude may run come from the
+// dashboard with each job; FIXER_EXTRA_TOOLS adds more, e.g.
+// "Bash(go test:*),Bash(npm test:*)".
 const defaultTools = "Read,Edit,Write,Glob,Grep,Bash(git diff:*),Bash(git status:*),Bash(git log:*),Bash(git show:*)"
 
 func env(k, def string) string {
@@ -101,6 +120,12 @@ func loadConfig() (config, error) {
 	}
 	// Claude Code gets only what it needs: no Sentinel or GitHub secrets.
 	c.claudeEnv = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + env("FIXER_AGENT_HOME", env("HOME", c.workdir)), "DISABLE_AUTOUPDATER=1", "CI=true"}
+	// Toolchain settings for the commands it may run (go build, …).
+	for _, k := range agentEnvPassthrough {
+		if v, ok := os.LookupEnv(k); ok {
+			c.claudeEnv = append(c.claudeEnv, k+"="+v)
+		}
+	}
 	switch {
 	case os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") != "":
 		c.auth = "subscription"
@@ -277,7 +302,18 @@ func (f *fixer) fix(ctx context.Context, job *fixjob.Job, log *slog.Logger, rl *
 		return fixjob.Result{}, err
 	}
 
-	out, err := f.runClaude(ctx, job, rl, dir, prompt(job), f.cfg.tools, f.cfg.maxTurns, f.cfg.model)
+	tools := f.cfg.tools
+	var allowed []string
+	for _, c := range job.Commands {
+		if validCommand(c) {
+			tools += ",Bash(" + c + ":*)"
+			allowed = append(allowed, c)
+		}
+	}
+	if len(allowed) > 0 {
+		rl.step("Claude may run: %s", strings.Join(allowed, ", "))
+	}
+	out, err := f.runClaude(ctx, job, rl, dir, prompt(job), tools, f.cfg.maxTurns, f.cfg.model)
 	if err != nil {
 		return fixjob.Result{}, err
 	}
@@ -388,6 +424,10 @@ func (f *fixer) runClaude(ctx context.Context, job *fixjob.Job, rl *runLog, dir,
 	shown := model
 	if shown == "" {
 		shown = "default model"
+	}
+	if validEffort(job.Effort) && job.Effort != "" {
+		args = append(args, "--effort", job.Effort)
+		shown += ", effort " + job.Effort
 	}
 	rl.step("Running Claude Code (%s, at most %d turns, %s)", shown, maxTurns, f.cfg.timeout)
 	cmd := exec.CommandContext(ctx, f.cfg.claude, args...)

@@ -75,7 +75,9 @@ app ──OTLP──▶ Collector ──otlphttp──▶ Sentinel :4318 ──�
 Sentinel can hand an issue to Claude Code, which fixes it and opens a pull
 request that says `Fixes #N`. A fix is asked for automatically for each new
 issue of a service with **Auto-fix** on (Settings → Services, off by default),
-or when someone presses **Fix it** on an issue. Only error issues are sent,
+when someone presses **Fix it** on an issue, or for every open error issue
+at once with **Fix all open issues** on the Issues page (issues with a fix
+queued, running or in an open pull request are skipped). Only error issues are sent,
 not outages or performance issues. Claude Code runs in one of two places,
 chosen under **Settings → GitHub → Automated fixes** (`AUTOFIX_MODE` is the
 default until you pick one there):
@@ -94,7 +96,17 @@ else is set in the dashboard, under **Settings → GitHub → Sentinel's fixer**
   Sentinel's database and only handed to the fixer with each job; the
   dashboard never shows it again. There is no "Sign in with Claude" button:
   Anthropic does not allow other apps to collect Claude logins.
-- **Models** for fixes and for investigations (default: Claude Code's).
+- **Models and effort** for fixes and for investigations (default: Claude
+  Code's). The model picker lists the models your sign-in can use (from the
+  Anthropic Models API) plus the aliases (`opus`, `sonnet`, `haiku`, `fable`)
+  that always pick the latest of a family; effort is Claude Code's
+  `--effort` (`low` … `max`).
+- **Commands Claude may run** in fixes, one per line, each with any
+  arguments: `go test` allows `go test ./...`. The default is `go build`,
+  `go test`, `go vet` and `gofmt`; shell syntax (`;`, `&&`, `|`, `$`) is
+  refused. The fixer image has Go (with `CGO_ENABLED=0`; a newer Go from
+  `go.mod` is downloaded) and Node; add other toolchains to
+  `Dockerfile.fixer`. Investigations only ever read.
 
 Sentinel and the fixer share a generated token through the `fixer-auth`
 volume, so neither needs `FIXER_TOKEN`. Environment variables still work as
@@ -102,9 +114,8 @@ defaults: `CLAUDE_CODE_OAUTH_TOKEN` / `FIXER_ANTHROPIC_API_KEY` sign the
 fixer in when the dashboard has no sign-in, `FIXER_MODEL` /
 `FIXER_ANALYZE_MODEL` are used when no model is set there, and a
 `FIXER_TOKEN` in `deploy/.env` replaces the generated token for both. Test
-commands the agent may run are still set in `.env`, e.g.
-`FIXER_EXTRA_TOOLS=Bash(go test:*)`, together with the toolchains in
-`Dockerfile.fixer`.
+`FIXER_EXTRA_TOOLS` (e.g. `Bash(make test:*)`) adds commands for every
+fix on top of the dashboard's list.
 
 The GitHub App also needs **Contents** and **Pull requests** (read and write);
 accept the new permissions on each installation. For each job:

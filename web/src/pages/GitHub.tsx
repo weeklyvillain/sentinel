@@ -172,6 +172,23 @@ interface FixerSettings {
   has_claude: boolean;
   model: string;
   analyze_model: string;
+  commands: string[];
+  default_commands: string[];
+  effort: string;
+  analyze_effort: string;
+}
+
+interface FixerModel {
+  id: string;
+  name: string;
+  alias?: boolean;
+}
+
+interface FixerModels {
+  aliases: FixerModel[];
+  models?: FixerModel[];
+  error?: string;
+  efforts: string[];
 }
 
 interface AutofixInfo {
@@ -241,9 +258,32 @@ function FixerCard({ d, onSaved }: { d: AutofixInfo; onSaved: () => void }) {
   const [token, setToken] = useState("");
   const [model, setModel] = useState(d.settings.model);
   const [analyzeModel, setAnalyzeModel] = useState(d.settings.analyze_model);
-  const dirty = token !== "" || model !== d.settings.model || analyzeModel !== d.settings.analyze_model;
+  const [effort, setEffort] = useState(d.settings.effort);
+  const [analyzeEffort, setAnalyzeEffort] = useState(d.settings.analyze_effort);
+  const [refresh, setRefresh] = useState(0);
+  const models = useAsync(() => api.get<FixerModels>("/api/autofix/models" + (refresh ? "?refresh=1" : "")), [refresh, d.settings.has_claude]);
+  const [commands, setCommands] = useState(d.settings.commands.join("\n"));
+  const cmdList = (s: string) =>
+    s
+      .split("\n")
+      .map((c) => c.trim().replace(/\s+/g, " "))
+      .filter(Boolean);
+  const dirty =
+    token !== "" ||
+    model !== d.settings.model ||
+    analyzeModel !== d.settings.analyze_model ||
+    effort !== d.settings.effort ||
+    analyzeEffort !== d.settings.analyze_effort ||
+    cmdList(commands).join("\n") !== d.settings.commands.join("\n");
   const save = async () => {
-    const body = { model, analyze_model: analyzeModel, ...(token ? { claude_kind: kind, claude_token: token } : {}) };
+    const body = {
+      model,
+      analyze_model: analyzeModel,
+      effort,
+      analyze_effort: analyzeEffort,
+      commands: cmdList(commands),
+      ...(token ? { claude_kind: kind, claude_token: token } : {}),
+    };
     if (await run(() => api.put("/api/autofix", body), "Fixer settings saved")) {
       setToken("");
       onSaved();
@@ -331,11 +371,49 @@ function FixerCard({ d, onSaved }: { d: AutofixInfo; onSaved: () => void }) {
         </label>
         <label className="field">
           Model for fixes
-          <input className="mono" value={model} onChange={(e) => setModel(e.target.value)} placeholder="Claude Code's default" />
+          <ModelPicker value={model} onChange={setModel} models={models.data} placeholder="Claude Code's default" />
+        </label>
+        <label className="field">
+          Effort for fixes
+          <EffortPicker value={effort} onChange={setEffort} levels={models.data?.efforts} />
         </label>
         <label className="field">
           Model for investigations
-          <input className="mono" value={analyzeModel} onChange={(e) => setAnalyzeModel(e.target.value)} placeholder="the fixer's default" />
+          <ModelPicker value={analyzeModel} onChange={setAnalyzeModel} models={models.data} placeholder="the fixer's default" />
+        </label>
+        <label className="field">
+          Effort for investigations
+          <EffortPicker value={analyzeEffort} onChange={setAnalyzeEffort} levels={models.data?.efforts} />
+        </label>
+        <div className="field full">
+          <span className="small muted">
+            {models.data?.models?.length
+              ? `${models.data.models.length} models available to this sign-in, plus the aliases that always pick the latest of a family.`
+              : models.data?.error
+                ? `Only the aliases are listed: ${models.data.error}.`
+                : "Loading the models…"}{" "}
+            Higher effort thinks longer and uses more tokens.{" "}
+            {d.settings.has_claude && (
+              <button type="button" className="small" onClick={() => setRefresh((n) => n + 1)}>
+                Refresh models
+              </button>
+            )}
+          </span>
+        </div>
+        <label className="field full">
+          Commands Claude may run in fixes
+          <textarea className="mono" rows={4} value={commands} onChange={(e) => setCommands(e.target.value)} placeholder={"go build\ngo test"} />
+          <span className="help">
+            One command per line; it may run each with any arguments, e.g. <code>go test</code> allows <code>go test ./...</code>. No shell syntax (
+            <code>;</code>, <code>&amp;&amp;</code>, <code>|</code>, <code>$</code>). Reading and editing files is always allowed; investigations only read.
+            The fixer has Go and Node; other toolchains go in <code>Dockerfile.fixer</code>. These commands run your repository's code inside the fixer
+            container, without access to Sentinel's or GitHub's tokens.{" "}
+            {commands.trim() !== d.settings.default_commands.join("\n") && (
+              <button type="button" className="small" onClick={() => setCommands(d.settings.default_commands.join("\n"))}>
+                Use the defaults ({d.settings.default_commands.join(", ")})
+              </button>
+            )}
+          </span>
         </label>
       </div>
       <div className="row" style={{ marginTop: 12, gap: 8 }}>
@@ -356,6 +434,46 @@ function FixerCard({ d, onSaved }: { d: AutofixInfo; onSaved: () => void }) {
         </p>
       )}
     </div>
+  );
+}
+
+function ModelPicker(p: { value: string; onChange: (v: string) => void; models?: FixerModels; placeholder: string }) {
+  const listed = p.models?.models ?? [];
+  const known = [...(p.models?.aliases ?? []), ...listed].some((m) => m.id === p.value);
+  return (
+    <select className="mono" value={p.value} onChange={(e) => p.onChange(e.target.value)}>
+      <option value="">{p.placeholder}</option>
+      <optgroup label="Latest of a family">
+        {(p.models?.aliases ?? []).map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.name}
+          </option>
+        ))}
+      </optgroup>
+      {listed.length > 0 && (
+        <optgroup label="Models">
+          {listed.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name} ({m.id})
+            </option>
+          ))}
+        </optgroup>
+      )}
+      {p.value && !known && <option value={p.value}>{p.value}</option>}
+    </select>
+  );
+}
+
+function EffortPicker(p: { value: string; onChange: (v: string) => void; levels?: string[] }) {
+  return (
+    <select value={p.value} onChange={(e) => p.onChange(e.target.value)}>
+      <option value="">Claude Code's default</option>
+      {(p.levels ?? ["low", "medium", "high", "xhigh", "max"]).map((l) => (
+        <option key={l} value={l}>
+          {l}
+        </option>
+      ))}
+    </select>
   );
 }
 
