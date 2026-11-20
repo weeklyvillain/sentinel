@@ -56,7 +56,6 @@ export default function Uptime() {
   return (
     <>
       <div className="page-head">
-        <h1>Uptime</h1>
         <span className="sub">HTTP checks run from the Sentinel server, so they keep working when an app server is down.</span>
         <div className="actions">
           <button className="primary" onClick={() => setEditing({})}>

@@ -213,7 +213,7 @@ func TestInstallSyncAndRepoAuthorization(t *testing.T) {
 	state := mustParse(t, iu.URL).Query().Get("state")
 	// GitHub redirects back to the setup URL.
 	resp, _ = h.do("GET", "/github/setup?installation_id=77&setup_action=install&state="+state, "", false)
-	if resp.StatusCode != 302 || !strings.HasPrefix(resp.Header.Get("Location"), "/github?installed=77") {
+	if resp.StatusCode != 302 || !strings.HasPrefix(resp.Header.Get("Location"), "/settings/github?installed=77") {
 		t.Fatalf("setup: %d %s", resp.StatusCode, resp.Header.Get("Location"))
 	}
 	repos, _ := h.st.ListRepos(context.Background())

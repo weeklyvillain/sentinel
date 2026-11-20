@@ -44,7 +44,6 @@ export default function Alarms() {
   return (
     <>
       <div className="page-head">
-        <h1>Alarms</h1>
         <span className="sub">Evaluated every 15s; webhooks are notified when an alarm starts firing and when it resolves.</span>
         <div className="actions">
           <button className="primary" onClick={() => setEditing({})}>
@@ -316,7 +315,7 @@ function AlarmForm(props: { initial: Partial<Alarm>; webhooks: Webhook[]; onClos
           Notify webhooks
           {props.webhooks.length === 0 ? (
             <span className="help">
-              No webhooks yet — <Link to="/webhooks">create one</Link>.
+              No webhooks yet — <Link to="/settings/webhooks">create one</Link>.
             </span>
           ) : (
             <div className="row">
