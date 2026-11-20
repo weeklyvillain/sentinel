@@ -112,6 +112,8 @@ export interface Group {
   fix_attempts?: number;
   fix_pr_number?: number;
   fix_pr_url?: string;
+  // Every pull request of a fix across repositories.
+  fix_prs?: { repo: string; number: number; url: string; state?: string; merged?: boolean }[];
 }
 
 export interface TagValue {

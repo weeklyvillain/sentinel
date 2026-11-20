@@ -15,12 +15,14 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web /src/internal/web/dist ./internal/web/dist
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/sentinel ./cmd/sentinel && mkdir -p /out/data
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/sentinel ./cmd/sentinel && mkdir -p /out/data /out/fixer-auth
 
 # 3. Minimal runtime: static binary, CA certificates, non-root user
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/sentinel /usr/local/bin/sentinel
 COPY --from=build --chown=nonroot:nonroot /out/data /data
+# Shared with the fixer container: Sentinel writes the fixer's token here.
+COPY --from=build --chown=nonroot:nonroot /out/fixer-auth /fixer-auth
 ENV SENTINEL_DB=/data/sentinel.db \
     SENTINEL_OTLP_ADDR=:4318 \
     SENTINEL_HTTP_ADDR=:8080

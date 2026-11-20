@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api, GitHubStatus, Repo } from "../api";
-import { Empty, ErrorNote, Icon, Loading, Switch, useAsync, useAction, useToast } from "../components/ui";
+import { Empty, ErrorNote, Icon, Loading, Switch, useAsync, useAction } from "../components/ui";
 import { ago } from "../util";
 
 export default function GitHub() {
@@ -149,139 +149,10 @@ export default function GitHub() {
           <AppSetup d={d} />
         </details>
       )}
-      <AutofixSetup />
+      <p className="small muted" style={{ marginTop: 16 }}>
+        Automated fixes (Sentinel's fixer or GitHub Actions) are set up under <Link to="/settings/fixer">Settings → Fixer</Link>.
+      </p>
     </>
-  );
-}
-
-interface FixerStatus {
-  connected: boolean;
-  last_seen?: string;
-  version?: string;
-  auth?: "subscription" | "api_key";
-  working?: { id: number; kind?: string; repo: string; issue: number; since: string };
-  last_error?: string;
-}
-
-interface AutofixInfo {
-  mode: "actions" | "fixer";
-  path?: string;
-  workflow?: string;
-  label?: string;
-  note?: string;
-  fixer?: FixerStatus;
-}
-
-function FixerCard({ f }: { f: FixerStatus }) {
-  return (
-    <div className="card">
-      <div className="card-head">
-        <h2>Automated fixes: Sentinel's fixer</h2>
-        <div className="right">
-          {f.connected ? <span className="badge ok">● connected</span> : <span className="badge bad">not connected</span>}
-        </div>
-      </div>
-      <p className="small muted">
-        When <strong>Auto-fix</strong> is on for a service (Settings → Services), or someone presses <strong>Fix it</strong> on an issue, the issue is queued
-        for the fixer container. It runs Claude Code on the repository and opens a pull request that says <code>Fixes #N</code>; Sentinel links it on the issue.
-      </p>
-      <div className="kv" style={{ gridTemplateColumns: "160px 1fr" }}>
-        <span className="k">Last asked for work</span>
-        <span className="v">{f.last_seen ? ago(f.last_seen) : "never"}</span>
-        <span className="k">Claude sign-in</span>
-        <span className="v">
-          {f.auth === "subscription" ? "your Claude subscription (CLAUDE_CODE_OAUTH_TOKEN)" : f.auth === "api_key" ? "API key (billed per token)" : "—"}
-        </span>
-        <span className="k">Working on</span>
-        <span className="v">
-          {f.working
-            ? f.working.kind === "analyze"
-              ? `investigating an error${f.working.repo ? ` in ${f.working.repo}` : ""}, since ${ago(f.working.since)}`
-              : `fixing ${f.working.repo}#${f.working.issue}, since ${ago(f.working.since)}`
-            : "nothing"}
-        </span>
-        {f.last_error && (
-          <>
-            <span className="k">Last error</span>
-            <span className="v" style={{ color: "var(--bad)" }}>
-              {f.last_error}
-            </span>
-          </>
-        )}
-      </div>
-      {!f.connected && (
-        <ol className="steps small" style={{ marginTop: 12 }}>
-          <li>
-            On your own machine run <code>claude setup-token</code> and put the token in <code>deploy/.env</code> as <code>CLAUDE_CODE_OAUTH_TOKEN</code>.
-          </li>
-          <li>
-            Set the same <code>FIXER_TOKEN</code> for Sentinel and the fixer, then <code>docker compose --profile fixer up -d --build</code>.
-          </li>
-          <li>
-            Give the GitHub App <strong>Contents</strong> and <strong>Pull requests</strong> (read and write) and accept the new permissions on each installation.
-          </li>
-        </ol>
-      )}
-    </div>
-  );
-}
-
-function AutofixSetup() {
-  const toast = useToast();
-  const info = useAsync(() => api.get<AutofixInfo>("/api/autofix"), [], 15000);
-  if (!info.data) return null;
-  if (info.data.mode === "fixer") return <FixerCard f={info.data.fixer!} />;
-  const fixerStatus = info.data.fixer;
-  const wf = { data: info.data as Required<Pick<AutofixInfo, "path" | "workflow" | "label" | "note">> };
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(wf.data!.workflow);
-      toast("Workflow copied");
-    } catch {
-      toast("Could not copy; select the text instead", true);
-    }
-  };
-  return (
-    <div className="card">
-      <div className="card-head">
-        <h2>Automated fixes</h2>
-        <div className="right">
-          <button className="small" onClick={copy}>
-            Copy workflow
-          </button>
-        </div>
-      </div>
-      <p className="small muted">
-        When <strong>Auto-fix</strong> is on for a service (Settings → Services), or someone presses <strong>Fix it</strong> on an issue, Sentinel adds the{" "}
-        <code>{wf.data.label}</code> label to the GitHub issue. In each repository that should get fixes:
-      </p>
-      <ol className="steps small">
-        <li>
-          Save this workflow as <code>{wf.data.path}</code>. It runs Claude Code in GitHub Actions, which fixes the error and opens a pull request with{" "}
-          <code>Fixes #N</code>.
-        </li>
-        <li>
-          Add the repository secret <code>ANTHROPIC_API_KEY</code> (or install the Claude GitHub App with <code>claude /install-github-app</code> and use{" "}
-          <code>claude_code_oauth_token</code>).
-        </li>
-        <li>Add the setup your tests need (Go, Node, …) before the Claude step.</li>
-      </ol>
-      {wf.data.note && <div className="notice small" style={{ marginBottom: 8 }}>{wf.data.note}</div>}
-      <p className="small muted">
-        Sentinel follows the pull request on the issue's timeline and shows it on the issue; merging it closes the issue. No extra GitHub App permissions are
-        needed.
-      </p>
-      <details>
-        <summary className="small muted">Show the workflow</summary>
-        <pre className="code" style={{ maxHeight: 420 }}>{wf.data.workflow}</pre>
-      </details>
-      {fixerStatus && (
-        <p className="small muted" style={{ marginTop: 10 }}>
-          Sentinel's fixer container (for investigations):{" "}
-          {fixerStatus.connected ? <span className="badge ok">connected</span> : <span className="badge bad">not connected</span>}
-        </p>
-      )}
-    </div>
   );
 }
 

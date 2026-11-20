@@ -45,9 +45,25 @@ type Server struct {
 	Static     fs.FS // built SPA (index.html at root); nil = API only
 	// FixerToken authenticates the sentinel-fixer container on /fixer/*.
 	FixerToken string
-	fixer      fixerState
-	Log        *slog.Logger
-	Info       Info
+	// SetFixMode applies the fix mode chosen in the dashboard (the
+	// reporter's); see InitFixer.
+	SetFixMode   func(mode string)
+	fixer        fixerState
+	instPerms    instPermCache
+	instance     instanceState
+	integrations integrationState
+	claims       claimLimiter
+	// Restart reloads Sentinel in-process (after settings that are read at
+	// start change, like a new GitHub App).
+	Restart func()
+	// EnvIngestTokens is INGEST_TOKEN; without it the generated token is used.
+	EnvIngestTokens []string
+	GitHubAPIURL    string
+	GitHubWebURL    string
+	// DryRunFromEnv: DRY_RUN is set, so the dashboard cannot switch it.
+	DryRunFromEnv bool
+	Log           *slog.Logger
+	Info          Info
 }
 
 // Info is static configuration surfaced in the UI.
@@ -60,9 +76,10 @@ type Info struct {
 	MetricRetention string `json:"metric_retention"`
 	TraceRetention  string `json:"trace_retention"`
 	FixLabel        string `json:"fix_label"`
-	FixMode         string `json:"fix_mode"`
+	FixMode         string `json:"fix_mode"` // AUTOFIX_MODE; info() has the one in use
 	DownAfter       string `json:"down_after"`
 	OTLPAddr        string `json:"otlp_addr"`
+	IngestAuth      bool   `json:"ingest_auth"` // INGEST_TOKEN is set
 }
 
 // info is Info with the AI provider as it is now (it can change at runtime).
@@ -71,6 +88,7 @@ func (s *Server) info() Info {
 	if s.AI != nil {
 		in.AIProvider = s.AI.Name()
 	}
+	in.FixMode = s.fixMode()
 	return in
 }
 
@@ -91,6 +109,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /auth/callback", s.handleCallback)
 	mux.HandleFunc("POST /auth/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/me", s.handleMe)
+	mux.HandleFunc("GET /api/bootstrap", s.handleBootstrap)
+	mux.HandleFunc("POST /setup/claim", s.handleSetupClaim)
+	mux.HandleFunc("POST /setup/manifest", s.handleSetupManifest)
+	mux.HandleFunc("GET /github/manifest", s.handleManifestCallback)
 
 	api := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.requireAuth(h)) }
 
@@ -116,9 +138,26 @@ func (s *Server) Handler() http.Handler {
 	api("POST /api/groups/{id}/snooze", s.handleSnooze)
 	api("POST /api/groups/{id}/unmerge", s.handleUnmerge)
 	api("POST /api/groups/{id}/fix", s.handleRequestFix)
+	api("POST /api/fix-all", s.handleFixAll)
 	api("GET /api/autofix", s.handleAutofix)
+	api("PUT /api/autofix", s.handlePutAutofix)
+	api("GET /api/autofix/models", s.handleFixerModels)
+	api("GET /api/setup", s.handleSetup)
+	api("GET /api/integrations", s.handleIntegrations)
+	api("POST /api/integrations/sentry", s.handleAddSentryProject)
+	api("DELETE /api/integrations/sentry/{id}", s.handleDeleteSentryProject)
+	api("PUT /api/integrations/sentry/{id}", s.handleEditSentryProject)
+	api("POST /api/integrations/sentry/{id}/rotate", s.handleRotateSentryKey)
+	api("GET /api/access", s.handleGetAccess)
+	api("PUT /api/access", s.handlePutAccess)
+	api("POST /api/access/ingest-token", s.handleRotateIngest)
+	api("PUT /api/access/dry-run", s.handleDryRun)
+	api("POST /api/setup/skip", s.handleSkipSetup)
 	mux.HandleFunc("POST /fixer/claim", s.handleFixerClaim)
 	mux.HandleFunc("POST /fixer/jobs/{id}/result", s.handleFixerResult)
+	mux.HandleFunc("POST /fixer/runs/{id}/log", s.handleFixerLog)
+	api("GET /api/fixer/runs", s.handleListFixerRuns)
+	api("GET /api/fixer/runs/{id}", s.handleGetFixerRun)
 	api("POST /api/groups/merge", s.handleMerge)
 	api("GET /api/groups/{id}/tags", s.handleGroupTags)
 	api("GET /api/groups/{id}/breadcrumbs", s.handleBreadcrumbs)
@@ -142,6 +181,8 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/logs", s.handleLogs)
 	api("GET /api/logs/histogram", s.handleLogHistogram)
 	api("GET /api/logs/facets", s.handleLogFacets)
+	api("GET /api/logs/message-fields", s.handleGetLogFields)
+	api("PUT /api/logs/message-fields", s.handlePutLogField)
 
 	api("GET /api/metrics", s.handleMetricList)
 	api("GET /api/metrics/query", s.handleMetricQuery)
