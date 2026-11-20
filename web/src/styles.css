@@ -586,6 +586,23 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .ms-row:hover .ms-only, .ms-only:focus-visible { visibility: visible; }
 .saved-menu { min-width: 280px; max-width: 420px; gap: 4px; }
 .saved-menu .saved-name { flex: 1; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Logs: search autocomplete and the live reading of the search */
+.suggest { position: absolute; z-index: 30; top: calc(100% + 4px); left: 0; right: 0; max-height: 360px; overflow-y: auto; padding: 4px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--border); box-shadow: var(--pop-shadow); }
+.suggest-row { display: flex; align-items: baseline; gap: 8px; padding: 5px 8px; border-radius: var(--r-sm); cursor: pointer; min-width: 0; }
+.suggest-row.on { background: var(--hover); }
+.suggest-kind { flex: none; width: 44px; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--faint); }
+.suggest-kind.k-value { color: var(--accent); }
+.suggest-kind.k-keyword { color: var(--purple); }
+.suggest-label { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%; }
+.suggest-detail { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.suggest-foot { padding: 6px 8px 2px; border-top: 1px solid var(--border); margin-top: 4px; }
+.suggest-foot kbd, .search-guide kbd { font-family: var(--mono); font-size: 10.5px; padding: 0 4px; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--panel-2); }
+.search-guide { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.search-guide .bad { color: var(--bad); }
+.search-guide .warn { color: var(--warn); }
+.search-guide .link { height: auto; padding: 0; }
+.search-guide-terms { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; }
+.search-term { font-size: 11.5px; padding: 1px 6px; border-radius: 4px; background: var(--accent-soft); color: var(--text); }
 .search-help { margin-top: 12px; padding: 12px; border-radius: 8px; background: var(--panel-2); }
 .search-help-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 6px 16px; }
 .search-help-row { display: flex; flex-direction: column; gap: 1px; min-width: 0; }

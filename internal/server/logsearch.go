@@ -28,6 +28,36 @@ func (s *Server) handleLogMetric(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"series": series, "bucket_ms": bucket.Milliseconds(), "from": lq.From, "to": lq.To})
 }
 
+// --- writing a search ---
+
+// handleLogFieldValues lists common values of a field in the last day, for
+// autocomplete: ?field=http.route&prefix=/ord.
+func (s *Server) handleLogFieldValues(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	field := strings.TrimSpace(q.Get("field"))
+	if field == "" || len(field) > 200 {
+		writeErr(w, http.StatusBadRequest, "field is required (at most 200 characters)")
+		return
+	}
+	vals, err := s.Store.LogFieldValues(r.Context(), field, q.Get("prefix"), time.Now().Add(-24*time.Hour), 20)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"values": vals})
+}
+
+// handleExplainLogQuery checks a search and says in words what it matches:
+// {"terms": [...]} or {"error": "..."}. A bad search is not an HTTP error.
+func (s *Server) handleExplainLogQuery(w http.ResponseWriter, r *http.Request) {
+	terms, err := store.ExplainLogQuery(r.URL.Query().Get("q"))
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"terms": terms})
+}
+
 // --- saved searches ---
 
 func (s *Server) handleListSavedSearches(w http.ResponseWriter, r *http.Request) {

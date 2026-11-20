@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -351,5 +352,66 @@ func TestReposAndSettings(t *testing.T) {
 	sv, _ := s.GetService(ctx, "new-svc")
 	if !sv.Managed || sv.Repo != "acme/api" || len(sv.Labels) != 1 {
 		t.Errorf("service config: %+v", sv)
+	}
+}
+
+func TestExplainLogQuery(t *testing.T) {
+	cases := map[string]string{
+		`level>=warn service:api timeout`:      `level warn or higher | service is "api" | text has a word starting with "timeout"`,
+		`(timeout OR "conn refused") -env:dev`: `(text has a word starting with "timeout" OR text contains "conn refused") | NOT env is "dev"`,
+		`duration_ms>500 http.route:/orders/*`: `field duration_ms is above 500 | field http.route matches /orders/* (case-insensitive)`,
+		`user.id:* has:db.table status!=200`:   `field user.id is present | has the field db.table | field status is not "200"`,
+		`message:"slow query"`:                 `message contains "slow query"`,
+		``:                                     ``,
+	}
+	for in, want := range cases {
+		got, err := ExplainLogQuery(in)
+		if err != nil {
+			t.Errorf("%q: %v", in, err)
+			continue
+		}
+		if s := strings.Join(got, " | "); s != want {
+			t.Errorf("%q:\n got %s\nwant %s", in, s, want)
+		}
+	}
+	if _, err := ExplainLogQuery(`level:loud`); err == nil {
+		t.Error("level:loud: expected an error")
+	}
+}
+
+func TestLogFieldValuesAndFacets(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	t0 := time.Now().Add(-time.Hour)
+	seedLogs(t, s, t0)
+	if err := s.InsertLogs(ctx, []LogRecord{
+		{Time: t0, Service: "api", Body: `{"msg":"slow","db":{"table":"orders"}}`},
+		{Time: t0, Service: "api", Body: `{not json`},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	since := t0.Add(-time.Minute)
+	vals, err := s.LogFieldValues(ctx, "service", "", since, 10)
+	if err != nil || len(vals) != 3 || vals[0].Value != "billing" && vals[0].Value != "checkout" {
+		t.Fatalf("service values: %v %v", vals, err)
+	}
+	vals, err = s.LogFieldValues(ctx, "user.id", "1", since, 10)
+	if err != nil || len(vals) != 1 || vals[0].Value != "1" || vals[0].Count != 10 {
+		t.Fatalf("user.id values: %v %v", vals, err)
+	}
+	vals, err = s.LogFieldValues(ctx, "db.table", "", since, 10)
+	if err != nil || len(vals) != 1 || vals[0].Value != "orders" {
+		t.Fatalf("db.table values: %v %v", vals, err)
+	}
+	keys, err := s.LogFacets(ctx, since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"http.route": true, "user.id": true, "db.table": true, "msg": true}
+	for _, k := range keys {
+		delete(want, k)
+	}
+	if len(want) > 0 {
+		t.Fatalf("facets %v are missing %v", keys, want)
 	}
 }

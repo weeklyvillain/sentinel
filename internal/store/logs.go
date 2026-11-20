@@ -286,9 +286,10 @@ func (s *Store) CountLogs(ctx context.Context, q LogQuery) (int64, error) {
 	return n, err
 }
 
-// LogFacets returns attribute keys seen in recent logs (for filter suggestions).
+// LogFacets returns attribute keys, and the fields of JSON log lines, seen
+// in recent logs (for filter suggestions).
 func (s *Store) LogFacets(ctx context.Context, since time.Time) ([]string, error) {
-	rows, err := s.rdb.QueryContext(ctx, `SELECT DISTINCT j.key FROM (SELECT attrs FROM logs WHERE ts >= ? ORDER BY id DESC LIMIT 2000) l, json_each(l.attrs) j ORDER BY j.key LIMIT 300`, ms(since))
+	rows, err := s.rdb.QueryContext(ctx, `SELECT DISTINCT j.key FROM (SELECT attrs FROM logs WHERE ts >= ? ORDER BY id DESC LIMIT 2000) l, json_each(l.attrs) j WHERE j.key IS NOT NULL ORDER BY j.key LIMIT 300`, ms(since))
 	if err != nil {
 		return nil, err
 	}
@@ -301,7 +302,14 @@ func (s *Store) LogFacets(ctx context.Context, since time.Time) ([]string, error
 		}
 		out = append(out, k)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	keys, err := s.logJSONKeys(ctx, since)
+	if err != nil {
+		return out, nil // attribute keys are still useful on their own
+	}
+	return mergeKeys(out, keys), nil
 }
 
 // Prune deletes logs and metric points older than the given cutoffs, in

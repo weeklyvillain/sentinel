@@ -181,6 +181,8 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/logs", s.handleLogs)
 	api("GET /api/logs/histogram", s.handleLogHistogram)
 	api("GET /api/logs/facets", s.handleLogFacets)
+	api("GET /api/logs/values", s.handleLogFieldValues)
+	api("GET /api/logs/explain", s.handleExplainLogQuery)
 	api("GET /api/logs/metric", s.handleLogMetric)
 	api("GET /api/logs/saved", s.handleListSavedSearches)
 	api("POST /api/logs/saved", s.handleSaveSavedSearch)

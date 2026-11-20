@@ -4,6 +4,7 @@ import { api, Bucket, LogRecord, qs, Series } from "../api";
 import { bucketKeys, Legend, SeriesChart, StackedBars } from "../components/charts";
 import { CopyLink, Empty, ErrorNote, Icon, Modal, MultiSelect, RangePicker, Seg, Switch, useAction, useAsync } from "../components/ui";
 import { LogDrawer } from "../components/LogDrawer";
+import { LogSearchBox, LogSearchGuide } from "../components/LogSearchBox";
 import { newId, Panel } from "../dashboards/model";
 import { columnSuggestions, columnValue, messageOf, rememberColumns, rememberedColumns } from "../logjson";
 import {
@@ -234,16 +235,13 @@ export default function Logs() {
               saved.reload();
             }}
           />
-          <div className="search">
-            <Icon.search />
-            <input
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              placeholder="Search — e.g. level:error service:api timeout -healthcheck"
-              aria-label="Search logs"
-              spellCheck={false}
-            />
-          </div>
+          <LogSearchBox
+            value={draft}
+            onChange={setDraft}
+            onRun={search}
+            fields={fieldNames}
+            services={svcOptions.map((o) => o.value)}
+          />
           <MultiSelect
             label="Level"
             value={levels}
@@ -262,6 +260,15 @@ export default function Logs() {
             Syntax
           </button>
         </form>
+        <LogSearchGuide
+          draft={draft}
+          applied={q}
+          fields={fieldNames}
+          onFix={(text) => {
+            setDraft(text);
+            search(text);
+          }}
+        />
         <ErrorNote error={logs.error} />
         {help && (
           <SearchHelp
