@@ -534,16 +534,16 @@ func (s *Server) handleGitHubSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := strconv.ParseInt(q.Get("installation_id"), 10, 64)
 	if err != nil {
-		http.Redirect(w, r, "/github", http.StatusFound)
+		http.Redirect(w, r, "/settings/github", http.StatusFound)
 		return
 	}
 	// GetInstallation (as the app) proves the installation belongs to us.
 	if err := s.syncInstallation(r, id); err != nil {
 		s.log().Error("sync installation", "id", id, "err", err)
-		http.Redirect(w, r, "/github?error="+url.QueryEscape(err.Error()), http.StatusFound)
+		http.Redirect(w, r, "/settings/github?error="+url.QueryEscape(err.Error()), http.StatusFound)
 		return
 	}
-	http.Redirect(w, r, "/github?installed="+strconv.FormatInt(id, 10), http.StatusFound)
+	http.Redirect(w, r, "/settings/github?installed="+strconv.FormatInt(id, 10), http.StatusFound)
 }
 
 func (s *Server) handleRepoAllowed(w http.ResponseWriter, r *http.Request) {

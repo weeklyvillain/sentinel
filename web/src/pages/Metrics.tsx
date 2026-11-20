@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
-import { api, MetricSeriesInfo, qs, Series, Service } from "../api";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { api, MetricSeriesInfo, qs, Series } from "../api";
 import { Legend, SeriesChart } from "../components/charts";
-import { Empty, ErrorNote, Icon, Loading, RangePicker, useAsync } from "../components/ui";
+import { Empty, ErrorNote, Icon, Loading, Modal, RangePicker, useAction, useAsync } from "../components/ui";
+import { newId, Panel, PanelQuery, Unit } from "../dashboards/model";
+import type { Dashboard } from "./Dashboards";
+import { useServices } from "../shared";
 import { ago } from "../util";
 
 const AGGS = ["avg", "sum", "max", "min", "count"];
@@ -18,7 +21,7 @@ export default function Metrics() {
   const selected = (params.get("m") ?? "").split(",").filter(Boolean);
   const [filter, setFilter] = useState("");
 
-  const svcs = useAsync(() => api.get<Service[]>("/api/services"), []);
+  const svcs = useServices();
   const list = useAsync(() => api.get<MetricSeriesInfo[]>("/api/metrics" + qs({ service })), [service]);
 
   const set = (patch: Record<string, string>) => {
@@ -48,8 +51,7 @@ export default function Metrics() {
   return (
     <>
       <div className="page-head">
-        <h1>Metrics</h1>
-        <span className="sub">OTLP metrics per service (counters shown as per-interval deltas)</span>
+        <span className="sub">Every metric your services send. Counters are shown per interval. Add a chart to a dashboard to keep it.</span>
         <div className="actions">
           <select value={service} onChange={(e) => set({ service: e.target.value, m: "" })} aria-label="Service">
             <option value="">All services</option>
@@ -105,6 +107,7 @@ export default function Metrics() {
 function MetricPanel(props: { service: string; name: string; range: string; info?: MetricSeriesInfo }) {
   const [agg, setAgg] = useState(defaultAgg(props.info?.kind ?? ""));
   const [split, setSplit] = useState(false);
+  const [adding, setAdding] = useState(false);
   const q = useAsync(
     () => api.get<{ series: Series[]; bucket_ms: number }>("/api/metrics/query" + qs({ service: props.service, name: props.name, range: props.range, agg, split })),
     [props.service, props.name, props.range, agg, split],
@@ -123,6 +126,9 @@ function MetricPanel(props: { service: string; name: string; range: string; info
           </div>
         </div>
         <div className="right">
+          <button className="small" onClick={() => setAdding(true)} title="Add this chart to a dashboard">
+            + Dashboard
+          </button>
           <select value={agg} onChange={(e) => setAgg(e.target.value)} aria-label="Aggregation">
             {AGGS.map((a) => (
               <option key={a}>{a}</option>
@@ -144,6 +150,120 @@ function MetricPanel(props: { service: string; name: string; range: string; info
           {split && <Legend keys={q.data.series.map((s) => s.label)} />}
         </>
       )}
+      {adding && <AddToDashboard {...props} agg={agg} split={split} onClose={() => setAdding(false)} />}
     </div>
+  );
+}
+
+/** OTLP unit → dashboard unit, for the common ones. */
+function panelUnit(u?: string): Unit {
+  switch (u) {
+    case "s":
+      return "seconds";
+    case "ms":
+      return "ms";
+    case "By":
+      return "bytes";
+    case "By/s":
+      return "bytes/s";
+    case "%":
+      return "percent";
+    default:
+      return "";
+  }
+}
+
+/** Saves the chart as a panel on an existing or a new dashboard. */
+function AddToDashboard(props: { service: string; name: string; range: string; info?: MetricSeriesInfo; agg: string; split: boolean; onClose: () => void }) {
+  const run = useAction();
+  const nav = useNavigate();
+  const list = useAsync(() => api.get<Dashboard[]>("/api/dashboards"), []);
+  const [target, setTarget] = useState<string>(""); // dashboard id, or "" for a new one
+  const [newName, setNewName] = useState("Explored metrics");
+  const [title, setTitle] = useState(props.name + (props.service ? ` · ${props.service}` : ""));
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    if (list.data?.length && target === "") setTarget(String(list.data[0].id));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [list.data]);
+
+  const save = async () => {
+    setSaving(true);
+    const done = await run(async () => {
+      // "Split" in the explorer means one line per attribute set: group by every attribute key.
+      const groupBy = props.split
+        ? (await api.get<{ key: string }[]>(`/api/metrics/attrs${qs({ name: props.name, service: props.service })}`)).map((a) => a.key)
+        : [];
+      const panel: Panel = {
+        id: newId(),
+        title,
+        type: "timeseries",
+        w: 6,
+        h: 2,
+        queries: [
+          {
+            id: "A",
+            source: "metrics",
+            metric: props.name,
+            service: props.service || undefined,
+            agg: props.agg as PanelQuery["agg"],
+            group_by: groupBy.length ? groupBy : undefined,
+          },
+        ],
+        options: { unit: panelUnit(props.info?.unit), style: props.split ? "line" : "area" },
+      };
+      if (target) {
+        const d = await api.get<Dashboard>(`/api/dashboards/${target}`);
+        await api.put(`/api/dashboards/${d.id}`, { name: d.name, description: d.description, spec: { ...d.spec, panels: [...d.spec.panels, panel] } });
+        return { id: d.id, name: d.name, created: false };
+      }
+      const d = await api.post<Dashboard>("/api/dashboards", { name: newName.trim(), description: "", spec: { panels: [panel], range: props.range, refresh: 60 } });
+      return { id: d.id, name: d.name, created: true };
+    }, (r) => `Added to ${r.name}`);
+    setSaving(false);
+    if (!done) return;
+    props.onClose();
+    if (done.created) nav(`/dashboards/${done.id}`);
+  };
+
+  return (
+    <Modal
+      title="Add to dashboard"
+      onClose={props.onClose}
+      footer={
+        <>
+          <button onClick={props.onClose}>Cancel</button>
+          <button className="primary" onClick={save} disabled={saving || !title.trim() || (!target && !newName.trim())}>
+            {saving ? "Adding…" : "Add"}
+          </button>
+        </>
+      }
+    >
+      <label className="field">
+        Dashboard
+        <select value={target} onChange={(e) => setTarget(e.target.value)}>
+          {(list.data ?? []).map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.name}
+            </option>
+          ))}
+          <option value="">New dashboard…</option>
+        </select>
+      </label>
+      {!target && (
+        <label className="field">
+          New dashboard name
+          <input value={newName} onChange={(e) => setNewName(e.target.value)} autoFocus />
+        </label>
+      )}
+      <label className="field">
+        Panel title
+        <input value={title} onChange={(e) => setTitle(e.target.value)} />
+        <span className="help">
+          {props.agg}
+          {props.split ? ", one line per attribute set" : ""}. Change it later with the panel editor.
+        </span>
+      </label>
+    </Modal>
   );
 }

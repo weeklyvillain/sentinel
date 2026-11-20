@@ -1,6 +1,6 @@
 import { Fragment, useState } from "react";
 import { api, Delivery, Webhook } from "../api";
-import { Empty, ErrorNote, Loading, Modal, Switch, useAsync, useToast } from "../components/ui";
+import { Empty, ErrorNote, Loading, Modal, Switch, useAsync, useToast, useAction } from "../components/ui";
 import { ago, fmtFull } from "../util";
 
 const EVENT_HELP: Record<string, string> = {
@@ -18,17 +18,14 @@ interface HooksResp {
 
 export default function Webhooks() {
   const toast = useToast();
+  const run = useAction();
   const hooks = useAsync(() => api.get<HooksResp>("/api/webhooks"), []);
   const [editing, setEditing] = useState<Partial<Webhook> | null>(null);
   const [log, setLog] = useState<Webhook | null>(null);
 
   const test = async (h: Webhook) => {
-    try {
-      const d = await api.post<Delivery>(`/api/webhooks/${h.id}/test`);
-      toast(d.error ? `Test failed: ${d.error}` : `Delivered (HTTP ${d.status}, ${d.duration_ms}ms)`, !!d.error);
-    } catch (e) {
-      toast((e as Error).message, true);
-    }
+    const d = await run(() => api.post<Delivery>(`/api/webhooks/${h.id}/test`));
+    if (d) toast(d.error ? `Test failed: ${d.error}` : `Delivered (HTTP ${d.status}, ${d.duration_ms}ms)`, !!d.error);
   };
   const toggle = async (h: Webhook, enabled: boolean) => {
     await api.put(`/api/webhooks/${h.id}`, { ...h, enabled });
@@ -43,8 +40,7 @@ export default function Webhooks() {
   return (
     <>
       <div className="page-head">
-        <h1>Webhooks</h1>
-        <span className="sub">Push issue and outage events to Slack, Discord or any HTTP endpoint. Alarms pick their webhooks on the Alarms page.</span>
+        <span className="sub">Send issue and outage events to Slack, Discord or any HTTP endpoint. Alarms choose their own webhooks.</span>
         <div className="actions">
           <button className="primary" onClick={() => setEditing({})}>
             + New webhook

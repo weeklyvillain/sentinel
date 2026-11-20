@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, MetricSeriesInfo } from "../api";
-import { Empty, ErrorNote, Loading, Modal, RangePicker, useAsync, useToast } from "../components/ui";
+import { Empty, ErrorNote, Loading, Modal, RangePicker, useAsync, useAction } from "../components/ui";
 import { PanelEditor } from "../dashboards/editor";
 import { DashSpec, newId, Panel, TEMPLATES, usesServiceVar } from "../dashboards/model";
 import { PanelBody, ROW_PX, usePanelData } from "../dashboards/panels";
 import { ago } from "../util";
 
-interface Dashboard {
+export interface Dashboard {
   id: number;
   name: string;
   description: string;
@@ -20,19 +20,15 @@ function emptySpec(): DashSpec {
 }
 
 export default function Dashboards() {
-  const toast = useToast();
+  const run = useAction();
   const nav = useNavigate();
   const list = useAsync(() => api.get<Dashboard[]>("/api/dashboards"), []);
   const catalog = useAsync(() => api.get<MetricSeriesInfo[]>("/api/metrics"), []);
   const [creating, setCreating] = useState(false);
 
   const create = async (name: string, description: string, spec: DashSpec) => {
-    try {
-      const d = await api.post<Dashboard>("/api/dashboards", { name, description, spec });
-      nav(`/dashboards/${d.id}`);
-    } catch (e) {
-      toast((e as Error).message, true);
-    }
+    const d = await run(() => api.post<Dashboard>("/api/dashboards", { name, description, spec }));
+    if (d) nav(`/dashboards/${d.id}`);
   };
   const fromTemplate = (t: (typeof TEMPLATES)[number]) => {
     const spec = t.spec();
@@ -46,7 +42,6 @@ export default function Dashboards() {
   return (
     <>
       <div className="page-head">
-        <h1>Dashboards</h1>
         <span className="sub">Your own views of metrics and logs: graphs, gauges, stats and bar lists.</span>
         <div className="actions">
           <button className="primary" onClick={() => setCreating(true)}>
@@ -139,7 +134,7 @@ const REFRESH = [
 
 export function DashboardView() {
   const { id } = useParams();
-  const toast = useToast();
+  const run = useAction();
   const nav = useNavigate();
   const [params, setParams] = useSearchParams();
   const d = useAsync(() => api.get<Dashboard>(`/api/dashboards/${id}`), [id]);
@@ -179,14 +174,11 @@ export function DashboardView() {
   };
   const save = async () => {
     if (!draft) return;
-    try {
-      const spec = { ...draft.spec, range, refresh, service_var: usesServiceVar(draft.spec) ? service : undefined };
-      await api.put(`/api/dashboards/${draft.id}`, { name: draft.name, description: draft.description, spec });
-      toast("Dashboard saved");
+    const spec = { ...draft.spec, range, refresh, service_var: usesServiceVar(draft.spec) ? service : undefined };
+    const ok = await run(() => api.put(`/api/dashboards/${draft.id}`, { name: draft.name, description: draft.description, spec }).then(() => true), "Dashboard saved");
+    if (ok) {
       setDraft(null);
       d.reload();
-    } catch (e) {
-      toast((e as Error).message, true);
     }
   };
   const remove = async () => {

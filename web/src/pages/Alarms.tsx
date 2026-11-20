@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { Alarm, AlarmEvent, AlarmKind, api, MetricSeriesInfo, Service, Webhook } from "../api";
-import { Empty, ErrorNote, Loading, Modal, Switch, useAsync, useToast } from "../components/ui";
+import { Alarm, AlarmEvent, AlarmKind, api, MetricSeriesInfo, Webhook } from "../api";
+import { Empty, ErrorNote, Loading, Modal, Switch, useAction, useAsync, useToast } from "../components/ui";
+import { useServices } from "../shared";
 import { ago, fmtDuration, fmtFull, fmtNum } from "../util";
 
 const KIND_LABEL: Record<AlarmKind, string> = {
@@ -12,7 +13,7 @@ const KIND_LABEL: Record<AlarmKind, string> = {
 
 function describe(a: Alarm): string {
   const scope = a.service || "any service";
-  if (a.kind === "service_down") return `When ${scope} stops sending telemetry`;
+  if (a.kind === "service_down") return `When ${scope} stops sending telemetry (old alarm type)`;
   if (a.kind === "metric") return `${a.agg}(${a.metric}) ${a.op} ${a.threshold} over ${fmtDuration(a.window_s)} · ${scope}`;
   const what = a.query ? `logs matching "${a.query}"` : "log lines";
   const sev = a.min_severity >= 17 ? " (error+)" : a.min_severity >= 13 ? " (warn+)" : "";
@@ -21,6 +22,7 @@ function describe(a: Alarm): string {
 
 export default function Alarms() {
   const toast = useToast();
+  const run = useAction();
   const alarms = useAsync(() => api.get<Alarm[]>("/api/alarms"), [], 15000);
   const events = useAsync(() => api.get<AlarmEvent[]>("/api/alarms/events"), [], 15000);
   const hooks = useAsync(() => api.get<{ webhooks: Webhook[] }>("/api/webhooks"), []);
@@ -28,23 +30,18 @@ export default function Alarms() {
   const names = new Map((alarms.data ?? []).map((a) => [a.id, a.name]));
 
   const toggle = async (a: Alarm, enabled: boolean) => {
-    try {
-      await api.put(`/api/alarms/${a.id}`, { ...a, enabled });
-      alarms.reload();
-    } catch (e) {
-      toast((e as Error).message, true);
-    }
+    await run(() => api.put(`/api/alarms/${a.id}`, { ...a, enabled }));
+    alarms.reload();
   };
   const remove = async (a: Alarm) => {
     if (!confirm(`Delete alarm "${a.name}"?`)) return;
-    await api.del(`/api/alarms/${a.id}`);
+    await run(() => api.del(`/api/alarms/${a.id}`), `Deleted ${a.name}`);
     alarms.reload();
   };
 
   return (
     <>
       <div className="page-head">
-        <h1>Alarms</h1>
         <span className="sub">Evaluated every 15s; webhooks are notified when an alarm starts firing and when it resolves.</span>
         <div className="actions">
           <button className="primary" onClick={() => setEditing({})}>
@@ -175,7 +172,7 @@ function AlarmForm(props: { initial: Partial<Alarm>; webhooks: Webhook[]; onClos
   });
   const [err, setErr] = useState<string>();
   const [preview, setPreview] = useState<{ value: number; firing: boolean; no_data: boolean; message: string }>();
-  const svcs = useAsync(() => api.get<Service[]>("/api/services"), []);
+  const svcs = useServices();
   const metrics = useAsync(() => api.get<MetricSeriesInfo[]>("/api/metrics" + (a.service ? `?service=${encodeURIComponent(a.service)}` : "")), [a.service]);
   const set = (patch: Partial<Alarm>) => {
     setA((x) => ({ ...x, ...patch }));
@@ -231,7 +228,11 @@ function AlarmForm(props: { initial: Partial<Alarm>; webhooks: Webhook[]; onClos
         <label className="field">
           Type
           <select value={a.kind} onChange={(e) => set({ kind: e.target.value as AlarmKind })}>
-            {Object.entries(KIND_LABEL).map(([k, l]) => (
+            {Object.entries(KIND_LABEL)
+              // "Service down" is replaced by the Watch switch on Settings → Services;
+              // existing alarms of that type keep working and stay editable.
+              .filter(([k]) => k !== "service_down" || props.initial.kind === "service_down")
+              .map(([k, l]) => (
               <option key={k} value={k}>
                 {l}
               </option>
@@ -287,6 +288,12 @@ function AlarmForm(props: { initial: Partial<Alarm>; webhooks: Webhook[]; onClos
             </label>
           </>
         )}
+        {a.kind === "service_down" && (
+          <div className="notice warn full">
+            This is an old alarm type. To be alerted when a service goes quiet, switch on <strong>Watch</strong> for it under{" "}
+            <Link to="/settings/services">Settings → Services</Link> and subscribe a webhook to <code>service.down</code>.
+          </div>
+        )}
         {a.kind !== "service_down" && (
           <>
             <label className="field">
@@ -316,7 +323,7 @@ function AlarmForm(props: { initial: Partial<Alarm>; webhooks: Webhook[]; onClos
           Notify webhooks
           {props.webhooks.length === 0 ? (
             <span className="help">
-              No webhooks yet — <Link to="/webhooks">create one</Link>.
+              No webhooks yet — <Link to="/settings/webhooks">create one</Link>.
             </span>
           ) : (
             <div className="row">
